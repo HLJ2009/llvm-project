@@ -1,0 +1,15 @@
+language: cpp
+sudo: required
+dist: trusty
+compiler:
+- gcc
+os:
+- linux
+ruby: 2.2.0
+script:
+ mkdir build && cd build && cmake -DLLVM_ENABLE_PROJECTS=clang -G "Unix Makefiles" ../llvm && make && make check-all 
+branches:
+  only:
+  - master
+notifications:
+  email: false
