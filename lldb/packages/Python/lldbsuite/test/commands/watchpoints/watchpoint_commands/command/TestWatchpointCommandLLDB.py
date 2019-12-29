@@ -2,7 +2,6 @@
 Test 'watchpoint command'.
 """
 
-from __future__ import print_function
 
 
 import lldb
@@ -31,15 +30,6 @@ class WatchpointLLDBCommandTestCase(TestBase):
         self.exe_name = 'a%d.out' % self.test_number
         self.d = {'CXX_SOURCES': self.source, 'EXE': self.exe_name}
 
-    @expectedFailureAll(
-        oslist=["linux"],
-        archs=["aarch64"],
-        triple=no_match(".*-android"),
-        bugnumber="llvm.org/pr27710") # work on android
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
-    @expectedFailureNetBSD
     def test_watchpoint_command(self):
         """Test 'watchpoint command'."""
         self.build(dictionary=self.d)
@@ -101,14 +91,6 @@ class WatchpointLLDBCommandTestCase(TestBase):
         self.expect("frame variable --show-globals cookie",
                     substrs=['(int32_t)', 'cookie = 777'])
 
-    @expectedFailureAll(
-        oslist=["linux"],
-        archs=["aarch64"],
-        triple=no_match(".*-android"),
-        bugnumber="llvm.org/pr27710") # work on android
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
     def test_watchpoint_command_can_disable_a_watchpoint(self):
         """Test that 'watchpoint command' action can disable a watchpoint after it is triggered."""
         self.build(dictionary=self.d)

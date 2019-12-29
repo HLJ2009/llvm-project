@@ -16,6 +16,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/NestedNameSpecifier.h"
+#include "clang/AST/OpenMPClause.h"
 
 namespace clang {
 namespace ast_type_traits {
@@ -37,7 +38,7 @@ const ASTNodeKind::KindInfo ASTNodeKind::AllKindInfo[] = {
 #include "clang/AST/StmtNodes.inc"
   { NKI_None, "Type" },
 #define TYPE(DERIVED, BASE) { NKI_##BASE, #DERIVED "Type" },
-#include "clang/AST/TypeNodes.def"
+#include "clang/AST/TypeNodes.inc"
   { NKI_None, "OMPClause" },
 #define OPENMP_CLAUSE(TextualSpelling, Class) {NKI_OMPClause, #Class},
 #include "clang/Basic/OpenMPKinds.def"
@@ -104,7 +105,7 @@ ASTNodeKind ASTNodeKind::getFromNode(const Type &T) {
 #define TYPE(Class, Base)                                                      \
     case Type::Class: return ASTNodeKind(NKI_##Class##Type);
 #define ABSTRACT_TYPE(Class, Base)
-#include "clang/AST/TypeNodes.def"
+#include "clang/AST/TypeNodes.inc"
   }
   llvm_unreachable("invalid type kind");
  }
@@ -117,6 +118,7 @@ ASTNodeKind ASTNodeKind::getFromNode(const OMPClause &C) {
   case OMPC_threadprivate:
   case OMPC_uniform:
   case OMPC_device_type:
+  case OMPC_match:
   case OMPC_unknown:
     llvm_unreachable("unexpected OpenMP clause kind");
   }

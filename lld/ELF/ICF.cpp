@@ -88,12 +88,12 @@
 #include <algorithm>
 #include <atomic>
 
-using namespace lld;
-using namespace lld::elf;
 using namespace llvm;
 using namespace llvm::ELF;
 using namespace llvm::object;
 
+namespace lld {
+namespace elf {
 namespace {
 template <class ELFT> class ICF {
 public:
@@ -259,6 +259,13 @@ bool ICF<ELFT>::constantEq(const InputSection *secA, ArrayRef<RelTy> ra,
     if (!da || !db || da->scriptDefined || db->scriptDefined)
       return false;
 
+    // When comparing a pair of relocations, if they refer to different symbols,
+    // and either symbol is preemptible, the containing sections should be
+    // considered different. This is because even if the sections are identical
+    // in this DSO, they may not be after preemption.
+    if (da->isPreemptible || db->isPreemptible)
+      return false;
+
     // Relocations referring to absolute symbols are constant-equal if their
     // values are equal.
     if (!da->section && !db->section && da->value + addA == db->value + addB)
@@ -306,8 +313,8 @@ bool ICF<ELFT>::equalsConstant(const InputSection *a, const InputSection *b) {
     return false;
 
   // If two sections have different output sections, we cannot merge them.
-  if (getOutputSectionName(a) != getOutputSectionName(b) ||
-      a->getParent() != b->getParent())
+  assert(a->getParent() && b->getParent());
+  if (a->getParent() != b->getParent())
     return false;
 
   if (a->areRelocsRela)
@@ -445,11 +452,18 @@ static void print(const Twine &s) {
 
 // The main function of ICF.
 template <class ELFT> void ICF<ELFT>::run() {
+  // Compute isPreemptible early. We may add more symbols later, so this loop
+  // cannot be merged with the later computeIsPreemptible() pass which is used
+  // by scanRelocations().
+  for (Symbol *sym : symtab->symbols())
+    sym->isPreemptible = computeIsPreemptible(*sym);
+
   // Collect sections to merge.
-  for (InputSectionBase *sec : inputSections)
-    if (auto *s = dyn_cast<InputSection>(sec))
-      if (isEligible(s))
-        sections.push_back(s);
+  for (InputSectionBase *sec : inputSections) {
+    auto *s = cast<InputSection>(sec);
+    if (isEligible(s))
+      sections.push_back(s);
+  }
 
   // Initially, we use hash values to partition sections.
   parallelForEach(sections, [&](InputSection *s) {
@@ -511,9 +525,12 @@ template <class ELFT> void ICF<ELFT>::run() {
 }
 
 // ICF entry point function.
-template <class ELFT> void elf::doIcf() { ICF<ELFT>().run(); }
+template <class ELFT> void doIcf() { ICF<ELFT>().run(); }
 
-template void elf::doIcf<ELF32LE>();
-template void elf::doIcf<ELF32BE>();
-template void elf::doIcf<ELF64LE>();
-template void elf::doIcf<ELF64BE>();
+template void doIcf<ELF32LE>();
+template void doIcf<ELF32BE>();
+template void doIcf<ELF64LE>();
+template void doIcf<ELF64BE>();
+
+} // namespace elf
+} // namespace lld

@@ -874,7 +874,6 @@ private:
   bool parseSEHRegisterNumber(unsigned RegClassID, unsigned &RegNo);
   bool parseDirectiveSEHPushReg(SMLoc);
   bool parseDirectiveSEHSetFrame(SMLoc);
-  bool parseDirectiveSEHAllocStack(SMLoc);
   bool parseDirectiveSEHSaveReg(SMLoc);
   bool parseDirectiveSEHSaveXMM(SMLoc);
   bool parseDirectiveSEHPushFrame(SMLoc);
@@ -1113,9 +1112,10 @@ bool X86AsmParser::ParseRegister(unsigned &RegNo,
   if (RegNo == 0)
     RegNo = MatchRegisterName(Tok.getString().lower());
 
-  // The "flags" register cannot be referenced directly.
+  // The "flags" and "mxcsr" registers cannot be referenced directly.
   // Treat it as an identifier instead.
-  if (isParsingInlineAsm() && isParsingIntelSyntax() && RegNo == X86::EFLAGS)
+  if (isParsingInlineAsm() && isParsingIntelSyntax() &&
+      (RegNo == X86::EFLAGS || RegNo == X86::MXCSR))
     RegNo = 0;
 
   if (!is64BitMode()) {
@@ -2866,6 +2866,15 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
     }
   }
 
+  // Mark the operands of a call instruction.  These need to be handled
+  // differently when referenced in MS-style inline assembly.
+  if (Name.startswith("call") || Name.startswith("lcall")) {
+    for (size_t i = 1; i < Operands.size(); ++i) {
+      X86Operand &Op = static_cast<X86Operand &>(*Operands[i]);
+      Op.setCallOperand(true);
+    }
+  }
+
   if (Flags)
     Operands.push_back(X86Operand::CreatePrefix(Flags, NameLoc, NameLoc));
   return false;
@@ -3132,6 +3141,7 @@ unsigned X86AsmParser::checkTargetMatchPredicate(MCInst &Inst) {
   case X86::VCVTTSS2SI64Zrm: case X86::VCVTTSS2SI64Zrm_Int:
     if (ForcedVEXEncoding != VEXEncoding_EVEX)
       return Match_Unsupported;
+    break;
   }
 
   return Match_Success;
@@ -3750,11 +3760,10 @@ bool X86AsmParser::parseSEHRegisterNumber(unsigned RegClassID,
   SMLoc startLoc = getLexer().getLoc();
   const MCRegisterInfo *MRI = getContext().getRegisterInfo();
 
-  // A percent indicates a symbolic register name. Parse it as usual and check
-  // the register class.
-  if (getLexer().is(AsmToken::Percent)) {
+  // Try parsing the argument as a register first.
+  if (getLexer().getTok().isNot(AsmToken::Integer)) {
     SMLoc endLoc;
-    if (getParser().getTargetParser().ParseRegister(RegNo, startLoc, endLoc))
+    if (ParseRegister(RegNo, startLoc, endLoc))
       return true;
 
     if (!X86MCRegisterClasses[RegClassID].contains(RegNo)) {
@@ -3816,19 +3825,6 @@ bool X86AsmParser::parseDirectiveSEHSetFrame(SMLoc Loc) {
 
   getParser().Lex();
   getStreamer().EmitWinCFISetFrame(Reg, Off, Loc);
-  return false;
-}
-
-bool X86AsmParser::parseDirectiveSEHAllocStack(SMLoc Loc) {
-  int64_t Size;
-  if (getParser().parseAbsoluteExpression(Size))
-    return true;
-
-  if (getLexer().isNot(AsmToken::EndOfStatement))
-    return TokError("unexpected token in directive");
-
-  getParser().Lex();
-  getStreamer().EmitWinCFIAllocStack(Size, Loc);
   return false;
 }
 

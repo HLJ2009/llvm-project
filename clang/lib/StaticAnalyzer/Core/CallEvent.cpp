@@ -14,6 +14,7 @@
 
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/DeclCXX.h"
@@ -27,22 +28,22 @@
 #include "clang/Analysis/AnalysisDeclContext.h"
 #include "clang/Analysis/CFG.h"
 #include "clang/Analysis/CFGStmtMap.h"
+#include "clang/Analysis/PathDiagnostic.h"
 #include "clang/Analysis/ProgramPoint.h"
-#include "clang/CrossTU/CrossTranslationUnit.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Specifiers.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/PathDiagnostic.h"
+#include "clang/CrossTU/CrossTranslationUnit.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/DynamicTypeInfo.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/DynamicType.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/DynamicTypeInfo.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/MemRegion.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState_Fwd.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SValBuilder.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/Store.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -368,7 +369,8 @@ bool CallEvent::isCalled(const CallDescription &CD) const {
 
   if (CD.Flags & CDF_MaybeBuiltin) {
     return CheckerContext::isCLibraryFunction(FD, CD.getFunctionName()) &&
-           (!CD.RequiredArgs || CD.RequiredArgs <= getNumArgs());
+           (!CD.RequiredArgs || CD.RequiredArgs <= getNumArgs()) &&
+           (!CD.RequiredParams || CD.RequiredParams <= parameters().size());
   }
 
   if (!CD.IsLookupDone) {
@@ -407,7 +409,8 @@ bool CallEvent::isCalled(const CallDescription &CD) const {
       return false;
   }
 
-  return (!CD.RequiredArgs || CD.RequiredArgs == getNumArgs());
+  return (!CD.RequiredArgs || CD.RequiredArgs == getNumArgs()) &&
+         (!CD.RequiredParams || CD.RequiredParams == parameters().size());
 }
 
 SVal CallEvent::getArgSVal(unsigned Index) const {
@@ -517,7 +520,7 @@ static void addParameterValuesToBindings(const StackFrameContext *CalleeCtx,
 
     // TODO: Support allocator calls.
     if (Call.getKind() != CE_CXXAllocator)
-      if (Call.isArgumentConstructedDirectly(Idx))
+      if (Call.isArgumentConstructedDirectly(Call.getASTArgumentIndex(Idx)))
         continue;
 
     // TODO: Allocators should receive the correct size and possibly alignment,
@@ -1078,7 +1081,7 @@ ObjCMessageKind ObjCMethodCall::getMessageKind() const {
 
 const ObjCPropertyDecl *ObjCMethodCall::getAccessedProperty() const {
   // Look for properties accessed with property syntax (foo.bar = ...)
-  if ( getMessageKind() == OCM_PropertyAccess) {
+  if (getMessageKind() == OCM_PropertyAccess) {
     const PseudoObjectExpr *POE = getContainingPseudoObjectExpr();
     assert(POE && "Property access without PseudoObjectExpr?");
 
@@ -1307,6 +1310,8 @@ RuntimeDefinition ObjCMethodCall::getRuntimeDefinition() const {
         }
 
         const ObjCMethodDecl *MD = Val.getValue();
+        if (MD && !MD->hasBody())
+          MD = MD->getCanonicalDecl();
         if (CanBeSubClassed)
           return RuntimeDefinition(MD, Receiver);
         else

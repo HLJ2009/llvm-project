@@ -2,7 +2,6 @@
 Test lldb data formatter subsystem.
 """
 
-from __future__ import print_function
 
 
 import lldb
@@ -52,12 +51,25 @@ class LibcxxMapDataFormatterTestCase(TestBase):
         self.addTearDownHook(cleanup)
 
         ns = self.namespace
-        self.expect('frame variable ii',
+        self.expect('p ii',
+                    substrs=['%s::map' % ns,
+                             'size=0',
+                             '{}'])
+        self.expect('frame var ii',
                     substrs=['%s::map' % ns,
                              'size=0',
                              '{}'])
 
         lldbutil.continue_to_breakpoint(self.process(), bkpt)
+
+        self.expect('p ii',
+                    substrs=['%s::map' % ns, 'size=2',
+                             '[0] = ',
+                             'first = 0',
+                             'second = 0',
+                             '[1] = ',
+                             'first = 1',
+                             'second = 1'])
 
         self.expect('frame variable ii',
                     substrs=['%s::map' % ns, 'size=2',
@@ -81,7 +93,7 @@ class LibcxxMapDataFormatterTestCase(TestBase):
 
         lldbutil.continue_to_breakpoint(self.process(), bkpt)
 
-        self.expect("frame variable ii",
+        self.expect("p ii",
                     substrs=['%s::map' % ns, 'size=8',
                              '[5] = ',
                              'first = 5',
@@ -90,7 +102,7 @@ class LibcxxMapDataFormatterTestCase(TestBase):
                              'first = 7',
                              'second = 1'])
 
-        self.expect("p ii",
+        self.expect("frame var ii",
                     substrs=['%s::map' % ns, 'size=8',
                              '[5] = ',
                              'first = 5',

@@ -26,6 +26,11 @@
 //
 //  * Structs and enums to represent types and function signatures.
 //
+//  * const char *FunctionExtensionTable[]
+//    List of space-separated OpenCL extensions.  A builtin references an
+//    entry in this table when the builtin requires a particular (set of)
+//    extension(s) to be enabled.
+//
 //  * OpenCLTypeStruct TypeTable[]
 //    Type information for return types and arguments.
 //
@@ -50,12 +55,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "TableGenBackends.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Error.h"
@@ -67,6 +74,13 @@
 using namespace llvm;
 
 namespace {
+
+// A list of signatures that are shared by one or more builtin functions.
+struct BuiltinTableEntries {
+  SmallVector<StringRef, 4> Names;
+  std::vector<std::pair<const Record *, unsigned>> Signatures;
+};
+
 class BuiltinNameEmitter {
 public:
   BuiltinNameEmitter(RecordKeeper &Records, raw_ostream &OS)
@@ -77,6 +91,9 @@ public:
   void Emit();
 
 private:
+  // A list of indices into the builtin function table.
+  using BuiltinIndexListTy = SmallVector<unsigned, 11>;
+
   // Contains OpenCL builtin functions and related information, stored as
   // Record instances. They are coming from the associated TableGen file.
   RecordKeeper &Records;
@@ -104,6 +121,26 @@ private:
   // FctOverloadMap and TypeMap.
   void GetOverloads();
 
+  // Compare two lists of signatures and check that e.g. the OpenCL version,
+  // function attributes, and extension are equal for each signature.
+  // \param Candidate (in) Entry in the SignatureListMap to check.
+  // \param SignatureList (in) List of signatures of the considered function.
+  // \returns true if the two lists of signatures are identical.
+  bool CanReuseSignature(
+      BuiltinIndexListTy *Candidate,
+      std::vector<std::pair<const Record *, unsigned>> &SignatureList);
+
+  // Group functions with the same list of signatures by populating the
+  // SignatureListMap.
+  // Some builtin functions have the same list of signatures, for example the
+  // "sin" and "cos" functions. To save space in the BuiltinTable, the
+  // "isOpenCLBuiltin" function will have the same output for these two
+  // function names.
+  void GroupBySignature();
+
+  // Emit the FunctionExtensionTable that lists all function extensions.
+  void EmitExtensionTable();
+
   // Emit the TypeTable containing all types used by OpenCL builtins.
   void EmitTypeTable();
 
@@ -120,11 +157,14 @@ private:
   // Emit the BuiltinTable table. This table contains all the overloads of
   // each function, and is a struct OpenCLBuiltinDecl.
   // E.g.:
-  // // convert_float2_rtn
-  //   { 58, 2 },
+  // // 891 convert_float2_rtn
+  //   { 58, 2, 3, 100, 0 },
   // This means that the signature of this convert_float2_rtn overload has
   // 1 argument (+1 for the return type), stored at index 58 in
-  // the SignatureTable.
+  // the SignatureTable.  This prototype requires extension "3" in the
+  // FunctionExtensionTable.  The last two values represent the minimum (1.0)
+  // and maximum (0, meaning no max version) OpenCL version in which this
+  // overload is supported.
   void EmitBuiltinTable();
 
   // Emit a StringMatcher function to check whether a function name is an
@@ -160,12 +200,34 @@ private:
   // Contains the map of OpenCL types to their index in the TypeTable.
   MapVector<const Record *, unsigned> TypeMap;
 
+  // List of OpenCL function extensions mapping extension strings to
+  // an index into the FunctionExtensionTable.
+  StringMap<unsigned> FunctionExtensionIndex;
+
   // List of OpenCL type names in the same order as in enum OpenCLTypeID.
   // This list does not contain generic types.
   std::vector<const Record *> TypeList;
 
   // Same as TypeList, but for generic types only.
   std::vector<const Record *> GenTypeList;
+
+  // Map an ordered vector of signatures to their original Record instances,
+  // and to a list of function names that share these signatures.
+  //
+  // For example, suppose the "cos" and "sin" functions have only three
+  // signatures, and these signatures are at index Ix in the SignatureTable:
+  //          cos         |         sin         |  Signature    | Index
+  //  float   cos(float)  | float   sin(float)  |  Signature1   | I1
+  //  double  cos(double) | double  sin(double) |  Signature2   | I2
+  //  half    cos(half)   | half    sin(half)   |  Signature3   | I3
+  //
+  // Then we will create a mapping of the vector of signatures:
+  // SignatureListMap[<I1, I2, I3>] = <
+  //                  <"cos", "sin">,
+  //                  <Signature1, Signature2, Signature3>>
+  // The function "tan", having the same signatures, would be mapped to the
+  // same entry (<I1, I2, I3>).
+  MapVector<BuiltinIndexListTy *, BuiltinTableEntries> SignatureListMap;
 };
 } // namespace
 
@@ -178,15 +240,18 @@ void BuiltinNameEmitter::Emit() {
   // Emit enums and structs.
   EmitDeclarations();
 
+  // Parse the Records to populate the internal lists.
   GetOverloads();
+  GroupBySignature();
 
   // Emit tables.
+  EmitExtensionTable();
   EmitTypeTable();
   EmitSignatureTable();
   EmitBuiltinTable();
 
+  // Emit functions.
   EmitStringMatcher();
-
   EmitQualTypeFinder();
 }
 
@@ -233,6 +298,13 @@ void BuiltinNameEmitter::EmitDeclarations() {
 
   // Structure definitions.
   OS << R"(
+// Image access qualifier.
+enum OpenCLAccessQual : unsigned char {
+  OCLAQ_None,
+  OCLAQ_ReadOnly,
+  OCLAQ_WriteOnly,
+  OCLAQ_ReadWrite
+};
 
 // Represents a return type or argument type.
 struct OpenCLTypeStruct {
@@ -246,6 +318,8 @@ struct OpenCLTypeStruct {
   const bool IsConst;
   // 0 if the type is not volatile.
   const bool IsVolatile;
+  // Access qualifier.
+  const OpenCLAccessQual AccessQualifier;
   // Address space of the pointer (if applicable).
   const LangAS AS;
 };
@@ -258,6 +332,18 @@ struct OpenCLBuiltinStruct {
   // the SignatureTable represent the complete signature.  The first type at
   // index SigTableIndex is the return type.
   const unsigned NumTypes;
+  // Function attribute __attribute__((pure))
+  const bool IsPure;
+  // Function attribute __attribute__((const))
+  const bool IsConst;
+  // Function attribute __attribute__((convergent))
+  const bool IsConv;
+  // OpenCL extension(s) required for this overload.
+  const unsigned short Extension;
+  // First OpenCL version in which this overload was introduced (e.g. CL20).
+  const unsigned short MinVersion;
+  // First OpenCL version in which this overload was removed (e.g. CL20).
+  const unsigned short MaxVersion;
 };
 
 )";
@@ -344,15 +430,40 @@ void BuiltinNameEmitter::GetOverloads() {
   }
 }
 
+void BuiltinNameEmitter::EmitExtensionTable() {
+  OS << "static const char *FunctionExtensionTable[] = {\n";
+  unsigned Index = 0;
+  std::vector<Record *> FuncExtensions =
+      Records.getAllDerivedDefinitions("FunctionExtension");
+
+  for (const auto &FE : FuncExtensions) {
+    // Emit OpenCL extension table entry.
+    OS << "  // " << Index << ": " << FE->getName() << "\n"
+       << "  \"" << FE->getValueAsString("ExtName") << "\",\n";
+
+    // Record index of this extension.
+    FunctionExtensionIndex[FE->getName()] = Index++;
+  }
+  OS << "};\n\n";
+}
+
 void BuiltinNameEmitter::EmitTypeTable() {
   OS << "static const OpenCLTypeStruct TypeTable[] = {\n";
   for (const auto &T : TypeMap) {
-    OS << "  // " << T.second << "\n";
-    OS << "  {OCLT_" << T.first->getValueAsString("Name") << ", "
+    const char *AccessQual =
+        StringSwitch<const char *>(T.first->getValueAsString("AccessQualifier"))
+            .Case("RO", "OCLAQ_ReadOnly")
+            .Case("WO", "OCLAQ_WriteOnly")
+            .Case("RW", "OCLAQ_ReadWrite")
+            .Default("OCLAQ_None");
+
+    OS << "  // " << T.second << "\n"
+       << "  {OCLT_" << T.first->getValueAsString("Name") << ", "
        << T.first->getValueAsInt("VecWidth") << ", "
        << T.first->getValueAsBit("IsPointer") << ", "
        << T.first->getValueAsBit("IsConst") << ", "
        << T.first->getValueAsBit("IsVolatile") << ", "
+       << AccessQual << ", "
        << T.first->getValueAsString("AddrSpace") << "},\n";
   }
   OS << "};\n\n";
@@ -377,34 +488,118 @@ void BuiltinNameEmitter::EmitBuiltinTable() {
   unsigned Index = 0;
 
   OS << "static const OpenCLBuiltinStruct BuiltinTable[] = {\n";
-  for (const auto &FOM : FctOverloadMap) {
+  for (const auto &SLM : SignatureListMap) {
 
-    OS << "  // " << (Index + 1) << ": " << FOM.first << "\n";
+    OS << "  // " << (Index + 1) << ": ";
+    for (const auto &Name : SLM.second.Names) {
+      OS << Name << ", ";
+    }
+    OS << "\n";
 
-    for (const auto &Overload : FOM.second) {
-      OS << "  { "
-         << Overload.second << ", "
-         << Overload.first->getValueAsListOfDefs("Signature").size()
+    for (const auto &Overload : SLM.second.Signatures) {
+      StringRef ExtName = Overload.first->getValueAsDef("Extension")->getName();
+      OS << "  { " << Overload.second << ", "
+         << Overload.first->getValueAsListOfDefs("Signature").size() << ", "
+         << (Overload.first->getValueAsBit("IsPure")) << ", "
+         << (Overload.first->getValueAsBit("IsConst")) << ", "
+         << (Overload.first->getValueAsBit("IsConv")) << ", "
+         << FunctionExtensionIndex[ExtName] << ", "
+         << Overload.first->getValueAsDef("MinVersion")->getValueAsInt("ID")
+         << ", "
+         << Overload.first->getValueAsDef("MaxVersion")->getValueAsInt("ID")
          << " },\n";
-         Index++;
+      Index++;
     }
   }
   OS << "};\n\n";
 }
 
+bool BuiltinNameEmitter::CanReuseSignature(
+    BuiltinIndexListTy *Candidate,
+    std::vector<std::pair<const Record *, unsigned>> &SignatureList) {
+  assert(Candidate->size() == SignatureList.size() &&
+         "signature lists should have the same size");
+
+  auto &CandidateSigs =
+      SignatureListMap.find(Candidate)->second.Signatures;
+  for (unsigned Index = 0; Index < Candidate->size(); Index++) {
+    const Record *Rec = SignatureList[Index].first;
+    const Record *Rec2 = CandidateSigs[Index].first;
+    if (Rec->getValueAsBit("IsPure") == Rec2->getValueAsBit("IsPure") &&
+        Rec->getValueAsBit("IsConst") == Rec2->getValueAsBit("IsConst") &&
+        Rec->getValueAsBit("IsConv") == Rec2->getValueAsBit("IsConv") &&
+        Rec->getValueAsDef("MinVersion")->getValueAsInt("ID") ==
+            Rec2->getValueAsDef("MinVersion")->getValueAsInt("ID") &&
+        Rec->getValueAsDef("MaxVersion")->getValueAsInt("ID") ==
+            Rec2->getValueAsDef("MaxVersion")->getValueAsInt("ID") &&
+        Rec->getValueAsDef("Extension")->getName() ==
+            Rec2->getValueAsDef("Extension")->getName()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void BuiltinNameEmitter::GroupBySignature() {
+  // List of signatures known to be emitted.
+  std::vector<BuiltinIndexListTy *> KnownSignatures;
+
+  for (auto &Fct : FctOverloadMap) {
+    bool FoundReusableSig = false;
+
+    // Gather all signatures for the current function.
+    auto *CurSignatureList = new BuiltinIndexListTy();
+    for (const auto &Signature : Fct.second) {
+      CurSignatureList->push_back(Signature.second);
+    }
+    // Sort the list to facilitate future comparisons.
+    std::sort(CurSignatureList->begin(), CurSignatureList->end());
+
+    // Check if we have already seen another function with the same list of
+    // signatures.  If so, just add the name of the function.
+    for (auto *Candidate : KnownSignatures) {
+      if (Candidate->size() == CurSignatureList->size() &&
+          *Candidate == *CurSignatureList) {
+        if (CanReuseSignature(Candidate, Fct.second)) {
+          SignatureListMap.find(Candidate)->second.Names.push_back(Fct.first);
+          FoundReusableSig = true;
+        }
+      }
+    }
+
+    if (FoundReusableSig) {
+      delete CurSignatureList;
+    } else {
+      // Add a new entry.
+      SignatureListMap[CurSignatureList] = {
+          SmallVector<StringRef, 4>(1, Fct.first), Fct.second};
+      KnownSignatures.push_back(CurSignatureList);
+    }
+  }
+
+  for (auto *I : KnownSignatures) {
+    delete I;
+  }
+}
+
 void BuiltinNameEmitter::EmitStringMatcher() {
   std::vector<StringMatcher::StringPair> ValidBuiltins;
   unsigned CumulativeIndex = 1;
-  for (auto &i : FctOverloadMap) {
-    auto &Ov = i.second;
-    std::string RetStmt;
-    raw_string_ostream SS(RetStmt);
-    SS << "return std::make_pair(" << CumulativeIndex << ", " << Ov.size()
-       << ");";
-    SS.flush();
-    CumulativeIndex += Ov.size();
 
-    ValidBuiltins.push_back(StringMatcher::StringPair(i.first, RetStmt));
+  for (const auto &SLM : SignatureListMap) {
+    const auto &Ovl = SLM.second.Signatures;
+
+    // A single signature list may be used by different builtins.  Return the
+    // same <index, length> pair for each of those builtins.
+    for (const auto &FctName : SLM.second.Names) {
+      std::string RetStmt;
+      raw_string_ostream SS(RetStmt);
+      SS << "return std::make_pair(" << CumulativeIndex << ", " << Ovl.size()
+         << ");";
+      SS.flush();
+      ValidBuiltins.push_back(StringMatcher::StringPair(FctName, RetStmt));
+    }
+    CumulativeIndex += Ovl.size();
   }
 
   OS << R"(
@@ -455,6 +650,47 @@ static void OCL2Qual(ASTContext &Context, const OpenCLTypeStruct &Ty,
   // Start of switch statement over all types.
   OS << "\n  switch (Ty.ID) {\n";
 
+  // Switch cases for image types (Image2d, Image3d, ...)
+  std::vector<Record *> ImageTypes =
+      Records.getAllDerivedDefinitions("ImageType");
+
+  // Map an image type name to its 3 access-qualified types (RO, WO, RW).
+  std::map<StringRef, SmallVector<Record *, 3>> ImageTypesMap;
+  for (auto *IT : ImageTypes) {
+    auto Entry = ImageTypesMap.find(IT->getValueAsString("Name"));
+    if (Entry == ImageTypesMap.end()) {
+      SmallVector<Record *, 3> ImageList;
+      ImageList.push_back(IT);
+      ImageTypesMap.insert(
+          std::make_pair(IT->getValueAsString("Name"), ImageList));
+    } else {
+      Entry->second.push_back(IT);
+    }
+  }
+
+  // Emit the cases for the image types.  For an image type name, there are 3
+  // corresponding QualTypes ("RO", "WO", "RW").  The "AccessQualifier" field
+  // tells which one is needed.  Emit a switch statement that puts the
+  // corresponding QualType into "QT".
+  for (const auto &ITE : ImageTypesMap) {
+    OS << "    case OCLT_" << ITE.first.str() << ":\n"
+       << "      switch (Ty.AccessQualifier) {\n"
+       << "        case OCLAQ_None:\n"
+       << "          llvm_unreachable(\"Image without access qualifier\");\n";
+    for (const auto &Image : ITE.second) {
+      OS << StringSwitch<const char *>(
+                Image->getValueAsString("AccessQualifier"))
+                .Case("RO", "        case OCLAQ_ReadOnly:\n")
+                .Case("WO", "        case OCLAQ_WriteOnly:\n")
+                .Case("RW", "        case OCLAQ_ReadWrite:\n")
+         << "          QT.push_back(Context."
+         << Image->getValueAsDef("QTName")->getValueAsString("Name") << ");\n"
+         << "          break;\n";
+    }
+    OS << "      }\n"
+       << "      break;\n";
+  }
+
   // Switch cases for generic types.
   for (const auto *GenType : Records.getAllDerivedDefinitions("GenericType")) {
     OS << "    case OCLT_" << GenType->getValueAsString("Name") << ":\n";
@@ -495,6 +731,9 @@ static void OCL2Qual(ASTContext &Context, const OpenCLTypeStruct &Ty,
   StringMap<bool> TypesSeen;
 
   for (const auto *T : Types) {
+    // Check this is not an image type
+    if (ImageTypesMap.find(T->getValueAsString("Name")) != ImageTypesMap.end())
+      continue;
     // Check we have not seen this Type
     if (TypesSeen.find(T->getValueAsString("Name")) != TypesSeen.end())
       continue;
@@ -512,7 +751,9 @@ static void OCL2Qual(ASTContext &Context, const OpenCLTypeStruct &Ty,
   }
 
   // End of switch statement.
-  OS << "  } // end of switch (Ty.ID)\n\n";
+  OS << "    default:\n"
+     << "      llvm_unreachable(\"OpenCL builtin type not handled yet\");\n"
+     << "  } // end of switch (Ty.ID)\n\n";
 
   // Step 2.
   // Add ExtVector types if this was a generic type, as the switch statement
@@ -567,11 +808,7 @@ static void OCL2Qual(ASTContext &Context, const OpenCLTypeStruct &Ty,
   OS << "\n} // OCL2Qual\n";
 }
 
-namespace clang {
-
-void EmitClangOpenCLBuiltins(RecordKeeper &Records, raw_ostream &OS) {
+void clang::EmitClangOpenCLBuiltins(RecordKeeper &Records, raw_ostream &OS) {
   BuiltinNameEmitter NameChecker(Records, OS);
   NameChecker.Emit();
 }
-
-} // end namespace clang

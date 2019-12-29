@@ -140,7 +140,7 @@ GeneratePCHAction::CreateOutputFile(CompilerInstance &CI, StringRef InFile,
   std::unique_ptr<raw_pwrite_stream> OS =
       CI.createOutputFile(CI.getFrontendOpts().OutputFile, /*Binary=*/true,
                           /*RemoveFileOnSignal=*/false, InFile,
-                          /*Extension=*/"", /*UseTemporary=*/true);
+                          /*Extension=*/"", CI.getFrontendOpts().UseTemporary);
   if (!OS)
     return nullptr;
 
@@ -413,10 +413,22 @@ private:
       return "ExceptionSpecInstantiation";
     case CodeSynthesisContext::DeclaringSpecialMember:
       return "DeclaringSpecialMember";
+    case CodeSynthesisContext::DeclaringImplicitEqualityComparison:
+      return "DeclaringImplicitEqualityComparison";
     case CodeSynthesisContext::DefiningSynthesizedFunction:
       return "DefiningSynthesizedFunction";
+    case CodeSynthesisContext::RewritingOperatorAsSpaceship:
+      return "RewritingOperatorAsSpaceship";
     case CodeSynthesisContext::Memoization:
       return "Memoization";
+    case CodeSynthesisContext::ConstraintsCheck:
+      return "ConstraintsCheck";
+    case CodeSynthesisContext::ConstraintSubstitution:
+      return "ConstraintSubstitution";
+    case CodeSynthesisContext::ConstraintNormalization:
+      return "ConstraintNormalization";
+    case CodeSynthesisContext::ParameterMappingSubstitution:
+      return "ParameterMappingSubstitution";
     }
     return "";
   }
@@ -928,7 +940,7 @@ void PrintDependencyDirectivesSourceMinimizerAction::ExecuteAction() {
     // 'expected' comments.
     if (CI.getDiagnosticOpts().VerifyDiagnostics) {
       // Make sure we don't emit new diagnostics!
-      CI.getDiagnostics().setSuppressAllDiagnostics();
+      CI.getDiagnostics().setSuppressAllDiagnostics(true);
       Preprocessor &PP = getCompilerInstance().getPreprocessor();
       PP.EnterMainSourceFile();
       Token Tok;

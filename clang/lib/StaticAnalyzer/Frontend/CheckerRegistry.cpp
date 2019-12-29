@@ -437,7 +437,7 @@ void CheckerRegistry::initializeManager(CheckerManager &CheckerMgr) const {
 
   // Initialize the CheckerManager with all enabled checkers.
   for (const auto *Checker : enabledCheckers) {
-    CheckerMgr.setCurrentCheckName(CheckName(Checker->FullName));
+    CheckerMgr.setCurrentCheckerName(CheckerNameRef(Checker->FullName));
     Checker->Initialize(CheckerMgr);
   }
 }
@@ -591,7 +591,8 @@ void CheckerRegistry::printCheckerOptionList(raw_ostream &Out) const {
                                          /*MinLineWidth*/ 90);
     Out << "\n\n";
   };
-  for (const std::pair<StringRef, const CmdLineOption &> &Entry : OptionMap) {
+  for (const std::pair<const StringRef, const CmdLineOption &> &Entry :
+       OptionMap) {
     const CmdLineOption &Option = Entry.second;
     std::string FullOption = (Entry.first + ":" + Option.OptionName).str();
 

@@ -155,6 +155,14 @@ enum NodeType : unsigned {
   SMAXV,
   UMAXV,
 
+  SMAXV_PRED,
+  UMAXV_PRED,
+  SMINV_PRED,
+  UMINV_PRED,
+  ORV_PRED,
+  EORV_PRED,
+  ANDV_PRED,
+
   // Vector bitwise negation
   NOT,
 
@@ -191,6 +199,47 @@ enum NodeType : unsigned {
   FRECPE, FRECPS,
   FRSQRTE, FRSQRTS,
 
+  SUNPKHI,
+  SUNPKLO,
+  UUNPKHI,
+  UUNPKLO,
+
+  CLASTA_N,
+  CLASTB_N,
+  LASTA,
+  LASTB,
+  REV,
+  TBL,
+
+  INSR,
+  PTRUE,
+
+  // Unsigned gather loads.
+  GLD1,
+  GLD1_SCALED,
+  GLD1_UXTW,
+  GLD1_SXTW,
+  GLD1_UXTW_SCALED,
+  GLD1_SXTW_SCALED,
+  GLD1_IMM,
+
+  // Signed gather loads
+  GLD1S,
+  GLD1S_SCALED,
+  GLD1S_UXTW,
+  GLD1S_SXTW,
+  GLD1S_UXTW_SCALED,
+  GLD1S_SXTW_SCALED,
+  GLD1S_IMM,
+  // Scatter store
+  SST1,
+  SST1_SCALED,
+  SST1_UXTW,
+  SST1_SXTW,
+  SST1_UXTW_SCALED,
+  SST1_SXTW_SCALED,
+  SST1_IMM,
+
   // NEON Load/Store with post-increment base updates
   LD2post = ISD::FIRST_TARGET_MEMORY_OPCODE,
   LD3post,
@@ -219,8 +268,10 @@ enum NodeType : unsigned {
   STG,
   STZG,
   ST2G,
-  STZ2G
+  STZ2G,
 
+  LDP,
+  STP
 };
 
 } // end namespace AArch64ISD
@@ -260,6 +311,14 @@ public:
                                      const APInt &DemandedElts,
                                      const SelectionDAG &DAG,
                                      unsigned Depth = 0) const override;
+
+  MVT getPointerTy(const DataLayout &DL, uint32_t AS = 0) const override {
+    // Returning i64 unconditionally here (i.e. even for ILP32) means that the
+    // *DAG* representation of pointers will always be 64-bits. They will be
+    // truncated and extended when transferred to memory, but the 64-bit DAG
+    // allows us to use AArch64's addressing modes much more easily.
+    return MVT::getIntegerVT(64);
+  }
 
   bool targetShrinkDemandedConstant(SDValue Op, const APInt &Demanded,
                                     TargetLoweringOpt &TLO) const override;
@@ -383,7 +442,9 @@ public:
   /// Return true if an FMA operation is faster than a pair of fmul and fadd
   /// instructions. fmuladd intrinsics will be expanded to FMAs when this method
   /// returns true, otherwise fmuladd is expanded to fmul + fadd.
-  bool isFMAFasterThanFMulAndFAdd(EVT VT) const override;
+  bool isFMAFasterThanFMulAndFAdd(const MachineFunction &MF,
+                                  EVT VT) const override;
+  bool isFMAFasterThanFMulAndFAdd(const Function &F, Type *Ty) const override;
 
   const MCPhysReg *getScratchRegisters(CallingConv::ID CC) const override;
 
@@ -664,6 +725,7 @@ private:
   SDValue LowerSCALAR_TO_VECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerVECTOR_SHUFFLE(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerSPLAT_VECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerEXTRACT_SUBVECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerVectorSRA_SRL_SHL(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerShiftLeftParts(SDValue Op, SelectionDAG &DAG) const;
@@ -699,8 +761,8 @@ private:
   unsigned combineRepeatedFPDivisors() const override;
 
   ConstraintType getConstraintType(StringRef Constraint) const override;
-  unsigned getRegisterByName(const char* RegName, EVT VT,
-                             SelectionDAG &DAG) const override;
+  Register getRegisterByName(const char* RegName, EVT VT,
+                             const MachineFunction &MF) const override;
 
   /// Examine constraint string and operand type and determine a weight value.
   /// The operand object must already have been set up with the operand type.
@@ -727,6 +789,7 @@ private:
     return TargetLowering::getInlineAsmMemConstraint(ConstraintCode);
   }
 
+  bool isVectorLoadExtDesirable(SDValue ExtVal) const override;
   bool isUsedByReturnOnly(SDNode *N, SDValue &Chain) const override;
   bool mayBeEmittedAsTailCall(const CallInst *CI) const override;
   bool getIndexedAddressParts(SDNode *Op, SDValue &Base, SDValue &Offset,

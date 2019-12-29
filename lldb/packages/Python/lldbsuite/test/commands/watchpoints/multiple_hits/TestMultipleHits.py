@@ -2,7 +2,6 @@
 Test handling of cases when a single instruction triggers multiple watchpoints
 """
 
-from __future__ import print_function
 
 
 import lldb
@@ -16,9 +15,6 @@ class MultipleHitsTestCase(TestBase):
     mydir = TestBase.compute_mydir(__file__)
     NO_DEBUG_INFO_TESTCASE = True
 
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
     @skipIf(bugnumber="llvm.org/pr30758", oslist=["linux"], archs=["arm", "aarch64", "powerpc64le"])
     @skipIfwatchOS
     def test(self):

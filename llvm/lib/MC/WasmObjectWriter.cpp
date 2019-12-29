@@ -1324,6 +1324,14 @@ uint64_t WasmObjectWriter::writeObject(MCAssembler &Asm,
           Comdats[C->getName()].emplace_back(
               WasmComdatEntry{wasm::WASM_COMDAT_FUNCTION, Index});
         }
+
+        if (WS.hasExportName()) {
+          wasm::WasmExport Export;
+          Export.Name = WS.getExportName();
+          Export.Kind = wasm::WASM_EXTERNAL_FUNCTION;
+          Export.Index = Index;
+          Exports.push_back(Export);
+        }
       } else {
         // An import; the index was assigned above.
         Index = WasmIndices.find(&WS)->second;
@@ -1350,7 +1358,9 @@ uint64_t WasmObjectWriter::writeObject(MCAssembler &Asm,
         report_fatal_error(".size expression must be evaluatable");
 
       auto &DataSection = static_cast<MCSectionWasm &>(WS.getSection());
-      assert(DataSection.isWasmData());
+      if (!DataSection.isWasmData())
+        report_fatal_error("data symbols must live in a data section: " +
+                           WS.getName());
 
       // For each data symbol, export it in the symtab as a reference to the
       // corresponding Wasm data segment.
@@ -1450,8 +1460,10 @@ uint64_t WasmObjectWriter::writeObject(MCAssembler &Asm,
         Flags |= wasm::WASM_SYMBOL_EXPORTED;
       }
     }
-    if (WS.getName() != WS.getImportName())
+    if (WS.hasImportName())
       Flags |= wasm::WASM_SYMBOL_EXPLICIT_NAME;
+    if (WS.hasExportName())
+      Flags |= wasm::WASM_SYMBOL_EXPORTED;
 
     wasm::WasmSymbolInfo Info;
     Info.Name = WS.getName();

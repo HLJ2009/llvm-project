@@ -17,13 +17,14 @@
 using namespace llvm;
 using namespace llvm::support::endian;
 using namespace llvm::ELF;
-using namespace lld;
-using namespace lld::elf;
+
+namespace lld {
+namespace elf {
 
 // Page(Expr) is the page address of the expression Expr, defined
 // as (Expr & ~0xFFF). (This applies even if the machine page size
 // supported by the platform has a different value.)
-uint64_t elf::getAArch64Page(uint64_t expr) {
+uint64_t getAArch64Page(uint64_t expr) {
   return expr & ~static_cast<uint64_t>(0xFFF);
 }
 
@@ -36,10 +37,11 @@ public:
   RelType getDynRel(RelType type) const override;
   void writeGotPlt(uint8_t *buf, const Symbol &s) const override;
   void writePltHeader(uint8_t *buf) const override;
-  void writePlt(uint8_t *buf, uint64_t gotPltEntryAddr, uint64_t pltEntryAddr,
-                int32_t index, unsigned relOff) const override;
+  void writePlt(uint8_t *buf, const Symbol &sym,
+                uint64_t pltEntryAddr) const override;
   bool needsThunk(RelExpr expr, RelType type, const InputFile *file,
-                  uint64_t branchAddr, const Symbol &s) const override;
+                  uint64_t branchAddr, const Symbol &s,
+                  int64_t a) const override;
   uint32_t getThunkSectionSpacing() const override;
   bool inBranchRange(RelType type, uint64_t src, uint64_t dst) const override;
   bool usesOnlyLowPageBits(RelType type) const override;
@@ -62,8 +64,9 @@ AArch64::AArch64() {
   symbolicRel = R_AARCH64_ABS64;
   tlsDescRel = R_AARCH64_TLSDESC;
   tlsGotRel = R_AARCH64_TLS_TPREL64;
-  pltEntrySize = 16;
   pltHeaderSize = 32;
+  pltEntrySize = 16;
+  ipltEntrySize = 16;
   defaultMaxPageSize = 65536;
 
   // Align to the 2 MiB page size (known as a superpage or huge page).
@@ -211,9 +214,8 @@ void AArch64::writePltHeader(uint8_t *buf) const {
   relocateOne(buf + 12, R_AARCH64_ADD_ABS_LO12_NC, got + 16);
 }
 
-void AArch64::writePlt(uint8_t *buf, uint64_t gotPltEntryAddr,
-                       uint64_t pltEntryAddr, int32_t index,
-                       unsigned relOff) const {
+void AArch64::writePlt(uint8_t *buf, const Symbol &sym,
+                       uint64_t pltEntryAddr) const {
   const uint8_t inst[] = {
       0x10, 0x00, 0x00, 0x90, // adrp x16, Page(&(.plt.got[n]))
       0x11, 0x02, 0x40, 0xf9, // ldr  x17, [x16, Offset(&(.plt.got[n]))]
@@ -222,6 +224,7 @@ void AArch64::writePlt(uint8_t *buf, uint64_t gotPltEntryAddr,
   };
   memcpy(buf, inst, sizeof(inst));
 
+  uint64_t gotPltEntryAddr = sym.getGotPltVA();
   relocateOne(buf, R_AARCH64_ADR_PREL_PG_HI21,
               getAArch64Page(gotPltEntryAddr) - getAArch64Page(pltEntryAddr));
   relocateOne(buf + 4, R_AARCH64_LDST64_ABS_LO12_NC, gotPltEntryAddr);
@@ -229,13 +232,14 @@ void AArch64::writePlt(uint8_t *buf, uint64_t gotPltEntryAddr,
 }
 
 bool AArch64::needsThunk(RelExpr expr, RelType type, const InputFile *file,
-                         uint64_t branchAddr, const Symbol &s) const {
+                         uint64_t branchAddr, const Symbol &s,
+                         int64_t a) const {
   // ELF for the ARM 64-bit architecture, section Call and Jump relocations
   // only permits range extension thunks for R_AARCH64_CALL26 and
   // R_AARCH64_JUMP26 relocation types.
   if (type != R_AARCH64_CALL26 && type != R_AARCH64_JUMP26)
     return false;
-  uint64_t dst = (expr == R_PLT_PC) ? s.getPltVA() : s.getVA();
+  uint64_t dst = expr == R_PLT_PC ? s.getPltVA() : s.getVA(a);
   return !inBranchRange(type, branchAddr, dst);
 }
 
@@ -566,8 +570,8 @@ class AArch64BtiPac final : public AArch64 {
 public:
   AArch64BtiPac();
   void writePltHeader(uint8_t *buf) const override;
-  void writePlt(uint8_t *buf, uint64_t gotPltEntryAddr, uint64_t pltEntryAddr,
-                int32_t index, unsigned relOff) const override;
+  void writePlt(uint8_t *buf, const Symbol &sym,
+                uint64_t pltEntryAddr) const override;
 
 private:
   bool btiHeader; // bti instruction needed in PLT Header
@@ -588,8 +592,10 @@ AArch64BtiPac::AArch64BtiPac() {
   btiEntry = btiHeader && !config->shared;
   pacEntry = (config->andFeatures & GNU_PROPERTY_AARCH64_FEATURE_1_PAC);
 
-  if (btiEntry || pacEntry)
+  if (btiEntry || pacEntry) {
     pltEntrySize = 24;
+    ipltEntrySize = 24;
+  }
 }
 
 void AArch64BtiPac::writePltHeader(uint8_t *buf) const {
@@ -626,9 +632,8 @@ void AArch64BtiPac::writePltHeader(uint8_t *buf) const {
     memcpy(buf + sizeof(pltData), nopData, sizeof(nopData));
 }
 
-void AArch64BtiPac::writePlt(uint8_t *buf, uint64_t gotPltEntryAddr,
-                             uint64_t pltEntryAddr, int32_t index,
-                             unsigned relOff) const {
+void AArch64BtiPac::writePlt(uint8_t *buf, const Symbol &sym,
+                             uint64_t pltEntryAddr) const {
   // The PLT entry is of the form:
   // [btiData] addrInst (pacBr | stdBr) [nopData]
   const uint8_t btiData[] = { 0x5f, 0x24, 0x03, 0xd5 }; // bti c
@@ -653,6 +658,7 @@ void AArch64BtiPac::writePlt(uint8_t *buf, uint64_t gotPltEntryAddr,
     pltEntryAddr += sizeof(btiData);
   }
 
+  uint64_t gotPltEntryAddr = sym.getGotPltVA();
   memcpy(buf, addrInst, sizeof(addrInst));
   relocateOne(buf, R_AARCH64_ADR_PREL_PG_HI21,
               getAArch64Page(gotPltEntryAddr) -
@@ -679,4 +685,7 @@ static TargetInfo *getTargetInfo() {
   return &t;
 }
 
-TargetInfo *elf::getAArch64TargetInfo() { return getTargetInfo(); }
+TargetInfo *getAArch64TargetInfo() { return getTargetInfo(); }
+
+} // namespace elf
+} // namespace lld

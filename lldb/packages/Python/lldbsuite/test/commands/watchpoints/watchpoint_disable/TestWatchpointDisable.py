@@ -11,21 +11,11 @@ from lldbsuite.test import lldbplatform, lldbplatformutil
 class TestWatchpointSetEnable(TestBase):
     mydir = TestBase.compute_mydir(__file__)
 
-    def setUp(self):
-        # Call super's setUp().
-        TestBase.setUp(self)
-
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
     def test_disable_works (self):
         """Set a watchpoint, disable it, and make sure it doesn't get hit."""
         self.build()
         self.do_test(False)
 
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
     def test_disable_enable_works (self):
         """Set a watchpoint, disable it, and make sure it doesn't get hit."""
         self.build()

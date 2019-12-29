@@ -19,9 +19,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifndef LLVM_CLANG_TOOLS_EXTRA_UNITTESTS_CLANGD_FINDTARGET_H
+#define LLVM_CLANG_TOOLS_EXTRA_UNITTESTS_CLANGD_FINDTARGET_H
+
+#include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTTypeTraits.h"
+#include "clang/AST/NestedNameSpecifier.h"
+#include "clang/AST/Stmt.h"
 #include "clang/Basic/SourceLocation.h"
+#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <bitset>
 
@@ -68,6 +78,38 @@ class DeclRelationSet;
 /// FIXME: some AST nodes cannot be DynTypedNodes, these cannot be specified.
 llvm::SmallVector<const Decl *, 1>
 targetDecl(const ast_type_traits::DynTypedNode &, DeclRelationSet Mask);
+
+/// Information about a reference written in the source code, independent of the
+/// actual AST node that this reference lives in.
+/// Useful for tools that are source-aware, e.g. refactorings.
+struct ReferenceLoc {
+  /// Contains qualifier written in the code, if any, e.g. 'ns::' for 'ns::foo'.
+  NestedNameSpecifierLoc Qualifier;
+  /// Start location of the last name part, i.e. 'foo' in 'ns::foo<int>'.
+  SourceLocation NameLoc;
+  /// True if the reference is a declaration or definition;
+  bool IsDecl = false;
+  // FIXME: add info about template arguments.
+  /// A list of targets referenced by this name. Normally this has a single
+  /// element, but multiple is also possible, e.g. in case of using declarations
+  /// or unresolved overloaded functions.
+  /// For dependent and unresolved references, Targets can also be empty.
+  llvm::SmallVector<const NamedDecl *, 1> Targets;
+};
+llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, ReferenceLoc R);
+
+/// Recursively traverse \p S and report all references explicitly written in
+/// the code. The main use-case is refactorings that need to process all
+/// references in some subrange of the file and apply simple edits, e.g. add
+/// qualifiers.
+/// FIXME: currently this does not report references to overloaded operators.
+/// FIXME: extend to report location information about declaration names too.
+void findExplicitReferences(const Stmt *S,
+                            llvm::function_ref<void(ReferenceLoc)> Out);
+void findExplicitReferences(const Decl *D,
+                            llvm::function_ref<void(ReferenceLoc)> Out);
+void findExplicitReferences(const ASTContext &AST,
+                            llvm::function_ref<void(ReferenceLoc)> Out);
 
 /// Similar to targetDecl(), however instead of applying a filter, all possible
 /// decls are returned along with their DeclRelationSets.
@@ -140,5 +182,19 @@ inline DeclRelationSet operator&(DeclRelation L, DeclRelation R) {
 inline DeclRelationSet operator~(DeclRelation R) { return ~DeclRelationSet(R); }
 llvm::raw_ostream &operator<<(llvm::raw_ostream &, DeclRelationSet);
 
+/// Find declarations explicitly referenced in the source code defined by \p N.
+/// For templates, will prefer to return a template instantiation whenever
+/// possible. However, can also return a template pattern if the specialization
+/// cannot be picked, e.g. in dependent code or when there is no corresponding
+/// Decl for a template instantitation, e.g. for templated using decls:
+///    template <class T> using Ptr = T*;
+///    Ptr<int> x;
+///    ^~~ there is no Decl for 'Ptr<int>', so we return the template pattern.
+/// \p Mask should not contain TemplatePattern or TemplateInstantiation.
+llvm::SmallVector<const NamedDecl *, 1>
+explicitReferenceTargets(ast_type_traits::DynTypedNode N,
+                         DeclRelationSet Mask = {});
 } // namespace clangd
 } // namespace clang
+
+#endif // LLVM_CLANG_TOOLS_EXTRA_UNITTESTS_CLANGD_FINDTARGET_H

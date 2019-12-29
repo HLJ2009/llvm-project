@@ -196,7 +196,7 @@ class FuzzedDataProvider {
     // Use different integral types for different floating point types in order
     // to provide better density of the resulting values.
     using IntegralType =
-        typename std::conditional<sizeof(T) <= sizeof(uint32_t), uint32_t,
+        typename std::conditional<(sizeof(T) <= sizeof(uint32_t)), uint32_t,
                                   uint64_t>::type;
 
     T result = static_cast<T>(ConsumeIntegral<IntegralType>());
@@ -263,6 +263,12 @@ class FuzzedDataProvider {
     // which seems to be a natural choice for other implementations as well.
     // To increase the odds even more, we also call |shrink_to_fit| below.
     std::vector<T> result(size);
+    if (size == 0) {
+      if (num_bytes_to_consume != 0)
+        abort();
+      return result;
+    }
+
     std::memcpy(result.data(), data_ptr_, num_bytes_to_consume);
     Advance(num_bytes_to_consume);
 
@@ -284,9 +290,9 @@ class FuzzedDataProvider {
 
     // Avoid using implementation-defined unsigned to signer conversions.
     // To learn more, see https://stackoverflow.com/questions/13150449.
-    if (value <= std::numeric_limits<TS>::max())
+    if (value <= std::numeric_limits<TS>::max()) {
       return static_cast<TS>(value);
-    else {
+    } else {
       constexpr auto TS_min = std::numeric_limits<TS>::min();
       return TS_min + static_cast<char>(value - TS_min);
     }

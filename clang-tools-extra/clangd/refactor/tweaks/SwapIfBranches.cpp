@@ -62,8 +62,8 @@ bool SwapIfBranches::prepare(const Selection &Inputs) {
 }
 
 Expected<Tweak::Effect> SwapIfBranches::apply(const Selection &Inputs) {
-  auto &Ctx = Inputs.AST.getASTContext();
-  auto &SrcMgr = Inputs.AST.getSourceManager();
+  auto &Ctx = Inputs.AST->getASTContext();
+  auto &SrcMgr = Inputs.AST->getSourceManager();
 
   auto ThenRng = toHalfOpenFileRange(SrcMgr, Ctx.getLangOpts(),
                                      If->getThen()->getSourceRange());
@@ -90,7 +90,7 @@ Expected<Tweak::Effect> SwapIfBranches::apply(const Selection &Inputs) {
                                                  ElseRng->getBegin(),
                                                  ElseCode.size(), ThenCode)))
     return std::move(Err);
-  return Effect::applyEdit(Result);
+  return Effect::mainFileEdit(SrcMgr, std::move(Result));
 }
 
 } // namespace

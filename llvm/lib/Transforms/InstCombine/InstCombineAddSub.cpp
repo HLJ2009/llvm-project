@@ -890,6 +890,10 @@ Instruction *InstCombiner::foldAddWithConstant(BinaryOperator &Add) {
   if (match(Op0, m_ZExt(m_Value(X))) &&
       X->getType()->getScalarSizeInBits() == 1)
     return SelectInst::Create(X, AddOne(Op1C), Op1);
+  // sext(bool) + C -> bool ? C - 1 : C
+  if (match(Op0, m_SExt(m_Value(X))) &&
+      X->getType()->getScalarSizeInBits() == 1)
+    return SelectInst::Create(X, SubOne(Op1C), Op1);
 
   // ~X + C --> (C-1) - X
   if (match(Op0, m_Not(m_Value(X))))
@@ -1097,6 +1101,107 @@ static Instruction *foldToUnsignedSaturatedAdd(BinaryOperator &I) {
   return nullptr;
 }
 
+Instruction *
+InstCombiner::canonicalizeCondSignextOfHighBitExtractToSignextHighBitExtract(
+    BinaryOperator &I) {
+  assert((I.getOpcode() == Instruction::Add ||
+          I.getOpcode() == Instruction::Or ||
+          I.getOpcode() == Instruction::Sub) &&
+         "Expecting add/or/sub instruction");
+
+  // We have a subtraction/addition between a (potentially truncated) *logical*
+  // right-shift of X and a "select".
+  Value *X, *Select;
+  Instruction *LowBitsToSkip, *Extract;
+  if (!match(&I, m_c_BinOp(m_TruncOrSelf(m_CombineAnd(
+                               m_LShr(m_Value(X), m_Instruction(LowBitsToSkip)),
+                               m_Instruction(Extract))),
+                           m_Value(Select))))
+    return nullptr;
+
+  // `add`/`or` is commutative; but for `sub`, "select" *must* be on RHS.
+  if (I.getOpcode() == Instruction::Sub && I.getOperand(1) != Select)
+    return nullptr;
+
+  Type *XTy = X->getType();
+  bool HadTrunc = I.getType() != XTy;
+
+  // If there was a truncation of extracted value, then we'll need to produce
+  // one extra instruction, so we need to ensure one instruction will go away.
+  if (HadTrunc && !match(&I, m_c_BinOp(m_OneUse(m_Value()), m_Value())))
+    return nullptr;
+
+  // Extraction should extract high NBits bits, with shift amount calculated as:
+  //   low bits to skip = shift bitwidth - high bits to extract
+  // The shift amount itself may be extended, and we need to look past zero-ext
+  // when matching NBits, that will matter for matching later.
+  Constant *C;
+  Value *NBits;
+  if (!match(
+          LowBitsToSkip,
+          m_ZExtOrSelf(m_Sub(m_Constant(C), m_ZExtOrSelf(m_Value(NBits))))) ||
+      !match(C, m_SpecificInt_ICMP(ICmpInst::Predicate::ICMP_EQ,
+                                   APInt(C->getType()->getScalarSizeInBits(),
+                                         X->getType()->getScalarSizeInBits()))))
+    return nullptr;
+
+  // Sign-extending value can be zero-extended if we `sub`tract it,
+  // or sign-extended otherwise.
+  auto SkipExtInMagic = [&I](Value *&V) {
+    if (I.getOpcode() == Instruction::Sub)
+      match(V, m_ZExtOrSelf(m_Value(V)));
+    else
+      match(V, m_SExtOrSelf(m_Value(V)));
+  };
+
+  // Now, finally validate the sign-extending magic.
+  // `select` itself may be appropriately extended, look past that.
+  SkipExtInMagic(Select);
+
+  ICmpInst::Predicate Pred;
+  const APInt *Thr;
+  Value *SignExtendingValue, *Zero;
+  bool ShouldSignext;
+  // It must be a select between two values we will later establish to be a
+  // sign-extending value and a zero constant. The condition guarding the
+  // sign-extension must be based on a sign bit of the same X we had in `lshr`.
+  if (!match(Select, m_Select(m_ICmp(Pred, m_Specific(X), m_APInt(Thr)),
+                              m_Value(SignExtendingValue), m_Value(Zero))) ||
+      !isSignBitCheck(Pred, *Thr, ShouldSignext))
+    return nullptr;
+
+  // icmp-select pair is commutative.
+  if (!ShouldSignext)
+    std::swap(SignExtendingValue, Zero);
+
+  // If we should not perform sign-extension then we must add/or/subtract zero.
+  if (!match(Zero, m_Zero()))
+    return nullptr;
+  // Otherwise, it should be some constant, left-shifted by the same NBits we
+  // had in `lshr`. Said left-shift can also be appropriately extended.
+  // Again, we must look past zero-ext when looking for NBits.
+  SkipExtInMagic(SignExtendingValue);
+  Constant *SignExtendingValueBaseConstant;
+  if (!match(SignExtendingValue,
+             m_Shl(m_Constant(SignExtendingValueBaseConstant),
+                   m_ZExtOrSelf(m_Specific(NBits)))))
+    return nullptr;
+  // If we `sub`, then the constant should be one, else it should be all-ones.
+  if (I.getOpcode() == Instruction::Sub
+          ? !match(SignExtendingValueBaseConstant, m_One())
+          : !match(SignExtendingValueBaseConstant, m_AllOnes()))
+    return nullptr;
+
+  auto *NewAShr = BinaryOperator::CreateAShr(X, LowBitsToSkip,
+                                             Extract->getName() + ".sext");
+  NewAShr->copyIRFlags(Extract); // Preserve `exact`-ness.
+  if (!HadTrunc)
+    return NewAShr;
+
+  Builder.Insert(NewAShr);
+  return TruncInst::CreateTruncOrBitCast(NewAShr, I.getType());
+}
+
 Instruction *InstCombiner::visitAdd(BinaryOperator &I) {
   if (Value *V = SimplifyAddInst(I.getOperand(0), I.getOperand(1),
                                  I.hasNoSignedWrap(), I.hasNoUnsignedWrap(),
@@ -1186,12 +1291,6 @@ Instruction *InstCombiner::visitAdd(BinaryOperator &I) {
     // -A + B --> B - A
     return BinaryOperator::CreateSub(RHS, A);
   }
-
-  // Canonicalize sext to zext for better value tracking potential.
-  // add A, sext(B) --> sub A, zext(B)
-  if (match(&I, m_c_Add(m_Value(A), m_OneUse(m_SExt(m_Value(B))))) &&
-      B->getType()->isIntOrIntVectorTy(1))
-    return BinaryOperator::CreateSub(A, Builder.CreateZExt(B, Ty));
 
   // A + -B  -->  A - B
   if (match(RHS, m_Neg(m_Value(B))))
@@ -1300,6 +1399,10 @@ Instruction *InstCombiner::visitAdd(BinaryOperator &I) {
   }
 
   if (Instruction *V = canonicalizeLowbitMask(I, Builder))
+    return V;
+
+  if (Instruction *V =
+          canonicalizeCondSignextOfHighBitExtractToSignextHighBitExtract(I))
     return V;
 
   if (Instruction *SatAdd = foldToUnsignedSaturatedAdd(I))
@@ -1666,25 +1769,42 @@ Instruction *InstCombiner::visitSub(BinaryOperator &I) {
 
   const APInt *Op0C;
   if (match(Op0, m_APInt(Op0C))) {
-    unsigned BitWidth = I.getType()->getScalarSizeInBits();
 
-    // -(X >>u 31) -> (X >>s 31)
-    // -(X >>s 31) -> (X >>u 31)
     if (Op0C->isNullValue()) {
+      Value *Op1Wide;
+      match(Op1, m_TruncOrSelf(m_Value(Op1Wide)));
+      bool HadTrunc = Op1Wide != Op1;
+      bool NoTruncOrTruncIsOneUse = !HadTrunc || Op1->hasOneUse();
+      unsigned BitWidth = Op1Wide->getType()->getScalarSizeInBits();
+
       Value *X;
       const APInt *ShAmt;
-      if (match(Op1, m_LShr(m_Value(X), m_APInt(ShAmt))) &&
+      // -(X >>u 31) -> (X >>s 31)
+      if (NoTruncOrTruncIsOneUse &&
+          match(Op1Wide, m_LShr(m_Value(X), m_APInt(ShAmt))) &&
           *ShAmt == BitWidth - 1) {
-        Value *ShAmtOp = cast<Instruction>(Op1)->getOperand(1);
-        return BinaryOperator::CreateAShr(X, ShAmtOp);
+        Value *ShAmtOp = cast<Instruction>(Op1Wide)->getOperand(1);
+        Instruction *NewShift = BinaryOperator::CreateAShr(X, ShAmtOp);
+        NewShift->copyIRFlags(Op1Wide);
+        if (!HadTrunc)
+          return NewShift;
+        Builder.Insert(NewShift);
+        return TruncInst::CreateTruncOrBitCast(NewShift, Op1->getType());
       }
-      if (match(Op1, m_AShr(m_Value(X), m_APInt(ShAmt))) &&
+      // -(X >>s 31) -> (X >>u 31)
+      if (NoTruncOrTruncIsOneUse &&
+          match(Op1Wide, m_AShr(m_Value(X), m_APInt(ShAmt))) &&
           *ShAmt == BitWidth - 1) {
-        Value *ShAmtOp = cast<Instruction>(Op1)->getOperand(1);
-        return BinaryOperator::CreateLShr(X, ShAmtOp);
+        Value *ShAmtOp = cast<Instruction>(Op1Wide)->getOperand(1);
+        Instruction *NewShift = BinaryOperator::CreateLShr(X, ShAmtOp);
+        NewShift->copyIRFlags(Op1Wide);
+        if (!HadTrunc)
+          return NewShift;
+        Builder.Insert(NewShift);
+        return TruncInst::CreateTruncOrBitCast(NewShift, Op1->getType());
       }
 
-      if (Op1->hasOneUse()) {
+      if (!HadTrunc && Op1->hasOneUse()) {
         Value *LHS, *RHS;
         SelectPatternFlavor SPF = matchSelectPattern(Op1, LHS, RHS).Flavor;
         if (SPF == SPF_ABS || SPF == SPF_NABS) {
@@ -1774,14 +1894,16 @@ Instruction *InstCombiner::visitSub(BinaryOperator &I) {
                                   Builder.CreateNot(Y, Y->getName() + ".not"));
 
     // 0 - (X sdiv C)  -> (X sdiv -C)  provided the negation doesn't overflow.
-    // TODO: This could be extended to match arbitrary vector constants.
-    const APInt *DivC;
-    if (match(Op0, m_Zero()) && match(Op1, m_SDiv(m_Value(X), m_APInt(DivC))) &&
-        !DivC->isMinSignedValue() && *DivC != 1) {
-      Constant *NegDivC = ConstantInt::get(I.getType(), -(*DivC));
-      Instruction *BO = BinaryOperator::CreateSDiv(X, NegDivC);
-      BO->setIsExact(cast<BinaryOperator>(Op1)->isExact());
-      return BO;
+    if (match(Op0, m_Zero())) {
+      Constant *Op11C;
+      if (match(Op1, m_SDiv(m_Value(X), m_Constant(Op11C))) &&
+          !Op11C->containsUndefElement() && Op11C->isNotMinSignedValue() &&
+          Op11C->isNotOneValue()) {
+        Instruction *BO =
+            BinaryOperator::CreateSDiv(X, ConstantExpr::getNeg(Op11C));
+        BO->setIsExact(cast<BinaryOperator>(Op1)->isExact());
+        return BO;
+      }
     }
 
     // 0 - (X << Y)  -> (-X << Y)   when X is freely negatable.
@@ -1796,6 +1918,14 @@ Instruction *InstCombiner::visitSub(BinaryOperator &I) {
         Y->getType()->getScalarSizeInBits() == 1) {
       Value *Zext = Builder.CreateZExt(Y, I.getType());
       BinaryOperator *Add = BinaryOperator::CreateAdd(Op0, Zext);
+      Add->setHasNoSignedWrap(I.hasNoSignedWrap());
+      return Add;
+    }
+    // sub [nsw] X, zext(bool Y) -> add [nsw] X, sext(bool Y)
+    // 'nuw' is dropped in favor of the canonical form.
+    if (match(Op1, m_ZExt(m_Value(Y))) && Y->getType()->isIntOrIntVectorTy(1)) {
+      Value *Sext = Builder.CreateSExt(Y, I.getType());
+      BinaryOperator *Add = BinaryOperator::CreateAdd(Op0, Sext);
       Add->setHasNoSignedWrap(I.hasNoSignedWrap());
       return Add;
     }
@@ -1882,6 +2012,10 @@ Instruction *InstCombiner::visitSub(BinaryOperator &I) {
                                    I.hasNoSignedWrap());
     return SelectInst::Create(Cmp, Neg, A);
   }
+
+  if (Instruction *V =
+          canonicalizeCondSignextOfHighBitExtractToSignextHighBitExtract(I))
+    return V;
 
   if (Instruction *Ext = narrowMathIfNoOverflow(I))
     return Ext;

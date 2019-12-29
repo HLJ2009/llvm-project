@@ -2,7 +2,6 @@
 Test lldb watchpoint that uses '-s size' to watch a pointed location with size.
 """
 
-from __future__ import print_function
 
 
 import re
@@ -31,15 +30,11 @@ class HelloWatchLocationTestCase(TestBase):
         self.exe_name = self.testMethodName
         self.d = {'CXX_SOURCES': self.source, 'EXE': self.exe_name}
 
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
     # Most of the MIPS boards provide only one H/W watchpoints, and S/W
     # watchpoints are not supported yet
     @expectedFailureAll(triple=re.compile('^mips'))
     # SystemZ and PowerPC also currently supports only one H/W watchpoint
     @expectedFailureAll(archs=['powerpc64le', 's390x'])
-    @expectedFailureNetBSD
     @skipIfDarwin
     def test_hello_watchlocation(self):
         """Test watching a location with '-s size' option."""

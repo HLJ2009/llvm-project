@@ -253,9 +253,10 @@ struct CodeCompletionBuilder {
                         const IncludeInserter &Includes,
                         llvm::StringRef FileName,
                         CodeCompletionContext::Kind ContextKind,
-                        const CodeCompleteOptions &Opts)
+                        const CodeCompleteOptions &Opts, bool GenerateSnippets)
       : ASTCtx(ASTCtx), ExtractDocumentation(Opts.IncludeComments),
-        EnableFunctionArgSnippets(Opts.EnableFunctionArgSnippets) {
+        EnableFunctionArgSnippets(Opts.EnableFunctionArgSnippets),
+        GenerateSnippets(GenerateSnippets) {
     add(C, SemaCCS);
     if (C.SemaResult) {
       assert(ASTCtx);
@@ -318,11 +319,8 @@ struct CodeCompletionBuilder {
     // Turn absolute path into a literal string that can be #included.
     auto Inserted = [&](llvm::StringRef Header)
         -> llvm::Expected<std::pair<std::string, bool>> {
-      auto DeclaringURI =
-          URI::parse(C.IndexResult->CanonicalDeclaration.FileURI);
-      if (!DeclaringURI)
-        return DeclaringURI.takeError();
-      auto ResolvedDeclaring = URI::resolve(*DeclaringURI, FileName);
+      auto ResolvedDeclaring =
+          URI::resolve(C.IndexResult->CanonicalDeclaration.FileURI, FileName);
       if (!ResolvedDeclaring)
         return ResolvedDeclaring.takeError();
       auto ResolvedInserted = toHeaderFile(Header, FileName);
@@ -397,7 +395,7 @@ private:
     std::string ReturnType;
   };
 
-  // If all BundledEntrys have the same value for a property, return it.
+  // If all BundledEntries have the same value for a property, return it.
   template <std::string BundledEntry::*Member>
   const std::string *onlyValue() const {
     auto B = Bundled.begin(), E = Bundled.end();
@@ -422,6 +420,8 @@ private:
   }
 
   std::string summarizeSnippet() const {
+    if (!GenerateSnippets)
+      return "";
     auto *Snippet = onlyValue<&BundledEntry::SnippetSuffix>();
     if (!Snippet)
       // All bundles are function calls.
@@ -479,6 +479,8 @@ private:
   llvm::SmallVector<BundledEntry, 1> Bundled;
   bool ExtractDocumentation;
   bool EnableFunctionArgSnippets;
+  /// When false, no snippets are generated argument lists.
+  bool GenerateSnippets;
 };
 
 // Determine the symbol ID for a Sema code completion result, if possible.
@@ -490,14 +492,14 @@ llvm::Optional<SymbolID> getSymbolID(const CodeCompletionResult &R,
     return clang::clangd::getSymbolID(R.Declaration);
   }
   case CodeCompletionResult::RK_Macro:
-    return clang::clangd::getSymbolID(*R.Macro, R.MacroDefInfo, SM);
+    return clang::clangd::getSymbolID(R.Macro->getName(), R.MacroDefInfo, SM);
   case CodeCompletionResult::RK_Keyword:
     return None;
   }
   llvm_unreachable("unknown CodeCompletionResult kind");
 }
 
-// Scopes of the paritial identifier we're trying to complete.
+// Scopes of the partial identifier we're trying to complete.
 // It is used when we query the index for more completion results.
 struct SpecifiedScope {
   // The scopes we should look in, determined by Sema.
@@ -872,7 +874,7 @@ public:
       // Function Template.
       // - High score is better.
       // - Shorter signature is better.
-      // - Alphebatically smaller is better.
+      // - Alphabetically smaller is better.
       if (L.Quality.NumberOfParameters != R.Quality.NumberOfParameters)
         return L.Quality.NumberOfParameters < R.Quality.NumberOfParameters;
       if (L.Quality.NumberOfOptionalParameters !=
@@ -1033,8 +1035,8 @@ void loadMainFilePreambleMacros(const Preprocessor &PP,
       PP.getIdentifierTable().getExternalIdentifierLookup();
   if (!PreambleIdentifiers || !PreambleMacros)
     return;
-  for (const auto &MacroName : Preamble.MainFileMacros)
-    if (auto *II = PreambleIdentifiers->get(MacroName))
+  for (const auto &MacroName : Preamble.Macros.Names)
+    if (auto *II = PreambleIdentifiers->get(MacroName.getKey()))
       if (II->isOutOfDate())
         PreambleMacros->updateOutOfDateIdentifier(*II);
 }
@@ -1207,6 +1209,7 @@ class CodeCompleteFlow {
   // Sema takes ownership of Recorder. Recorder is valid until Sema cleanup.
   CompletionRecorder *Recorder = nullptr;
   CodeCompletionContext::Kind CCContextKind = CodeCompletionContext::CCC_Other;
+  bool IsUsingDeclaration = false;
   // Counters for logging.
   int NSema = 0, NIndex = 0, NSemaAndIndex = 0, NIdent = 0;
   bool Incomplete = false; // Would more be available with a higher limit?
@@ -1257,6 +1260,7 @@ public:
     auto RecorderOwner = std::make_unique<CompletionRecorder>(Opts, [&]() {
       assert(Recorder && "Recorder is not set");
       CCContextKind = Recorder->CCContext.getKind();
+      IsUsingDeclaration = Recorder->CCContext.isUsingDeclaration();
       auto Style = getFormatStyleForFile(
           SemaCCInput.FileName, SemaCCInput.Contents, SemaCCInput.VFS.get());
       // If preprocessor was run, inclusions from preprocessor callback should
@@ -1292,11 +1296,12 @@ public:
       SPAN_ATTACH(Tracer, "sema_completion_kind",
                   getCompletionKindString(CCContextKind));
       log("Code complete: sema context {0}, query scopes [{1}] (AnyScope={2}), "
-          "expected type {3}",
+          "expected type {3}{4}",
           getCompletionKindString(CCContextKind),
           llvm::join(QueryScopes.begin(), QueryScopes.end(), ","), AllScopes,
           PreferredType ? Recorder->CCContext.getPreferredType().getAsString()
-                        : "<none>");
+                        : "<none>",
+          IsUsingDeclaration ? ", inside using declaration" : "");
     });
 
     Recorder = RecorderOwner.get();
@@ -1331,6 +1336,7 @@ public:
     HeuristicPrefix = guessCompletionPrefix(Content, Offset);
     populateContextWords(Content);
     CCContextKind = CodeCompletionContext::CCC_Recovery;
+    IsUsingDeclaration = false;
     Filter = FuzzyMatcher(HeuristicPrefix.Name);
     auto Pos = offsetToPosition(Content, Offset);
     ReplacedRange.start = ReplacedRange.end = Pos;
@@ -1504,7 +1510,7 @@ private:
   }
 
   // Merges Sema and Index results where possible, to form CompletionCandidates.
-  // \p Identifiers is raw idenfiers that can also be completion condidates.
+  // \p Identifiers is raw idenfiers that can also be completion candidates.
   // Identifiers are not merged with results from index or sema.
   // Groups overloads if desired, to form CompletionCandidate::Bundles. The
   // bundles are scored and top results are returned, best to worst.
@@ -1668,7 +1674,8 @@ private:
       if (!Builder)
         Builder.emplace(Recorder ? &Recorder->CCSema->getASTContext() : nullptr,
                         Item, SemaCCS, QueryScopes, *Inserter, FileName,
-                        CCContextKind, Opts);
+                        CCContextKind, Opts,
+                        /*GenerateSnippets=*/!IsUsingDeclaration);
       else
         Builder->add(Item, SemaCCS);
     }

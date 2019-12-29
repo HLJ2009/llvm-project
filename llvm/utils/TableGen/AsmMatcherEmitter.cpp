@@ -1111,6 +1111,7 @@ static std::string getEnumNameForToken(StringRef Str) {
     case '<': Res += "_LT_"; break;
     case '>': Res += "_GT_"; break;
     case '-': Res += "_MINUS_"; break;
+    case '#': Res += "_HASH_"; break;
     default:
       if ((*it >= 'A' && *it <= 'Z') ||
           (*it >= 'a' && *it <= 'z') ||
@@ -3346,7 +3347,7 @@ void AsmMatcherEmitter::run(raw_ostream &OS) {
       return true;
     if (A.size() > B.size())
       return false;
-    for (const auto &Pair : zip(A, B)) {
+    for (auto Pair : zip(A, B)) {
       if (std::get<0>(Pair)->getName() < std::get<1>(Pair)->getName())
         return true;
       if (std::get<0>(Pair)->getName() > std::get<1>(Pair)->getName())

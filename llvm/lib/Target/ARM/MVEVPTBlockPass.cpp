@@ -25,6 +25,7 @@
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/Support/Debug.h"
 #include <cassert>
 #include <new>
 
@@ -62,28 +63,41 @@ namespace {
 
 INITIALIZE_PASS(MVEVPTBlock, DEBUG_TYPE, "ARM MVE VPT block pass", false, false)
 
-enum VPTMaskValue {
-  T     =  8, // 0b1000
-  TT    =  4, // 0b0100
-  TE    = 12, // 0b1100
-  TTT   =  2, // 0b0010
-  TTE   =  6, // 0b0110
-  TEE   = 10, // 0b1010
-  TET   = 14, // 0b1110
-  TTTT  =  1, // 0b0001
-  TTTE  =  3, // 0b0011
-  TTEE  =  5, // 0b0101
-  TTET  =  7, // 0b0111
-  TEEE  =  9, // 0b1001
-  TEET  = 11, // 0b1011
-  TETT  = 13, // 0b1101
-  TETE  = 15  // 0b1111
-};
+static MachineInstr *findVCMPToFoldIntoVPST(MachineBasicBlock::iterator MI,
+                                            const TargetRegisterInfo *TRI,
+                                            unsigned &NewOpcode) {
+  // Search backwards to the instruction that defines VPR. This may or not
+  // be a VCMP, we check that after this loop. If we find another instruction
+  // that reads cpsr, we return nullptr.
+  MachineBasicBlock::iterator CmpMI = MI;
+  while (CmpMI != MI->getParent()->begin()) {
+    --CmpMI;
+    if (CmpMI->modifiesRegister(ARM::VPR, TRI))
+      break;
+    if (CmpMI->readsRegister(ARM::VPR, TRI))
+      break;
+  }
+
+  if (CmpMI == MI)
+    return nullptr;
+  NewOpcode = VCMPOpcodeToVPT(CmpMI->getOpcode());
+  if (NewOpcode == 0)
+    return nullptr;
+
+  // Search forward from CmpMI to MI, checking if either register was def'd
+  if (registerDefinedBetween(CmpMI->getOperand(1).getReg(), std::next(CmpMI),
+                             MI, TRI))
+    return nullptr;
+  if (registerDefinedBetween(CmpMI->getOperand(2).getReg(), std::next(CmpMI),
+                             MI, TRI))
+    return nullptr;
+  return &*CmpMI;
+}
 
 bool MVEVPTBlock::InsertVPTBlocks(MachineBasicBlock &Block) {
   bool Modified = false;
-  MachineBasicBlock::iterator MBIter = Block.begin();
-  MachineBasicBlock::iterator EndIter = Block.end();
+  MachineBasicBlock::instr_iterator MBIter = Block.instr_begin();
+  MachineBasicBlock::instr_iterator EndIter = Block.instr_end();
 
   while (MBIter != EndIter) {
     MachineInstr *MI = &*MBIter;
@@ -105,43 +119,48 @@ bool MVEVPTBlock::InsertVPTBlocks(MachineBasicBlock &Block) {
       continue;
     }
 
-    MachineInstrBuilder MIBuilder =
-        BuildMI(Block, MBIter, dl, TII->get(ARM::MVE_VPST));
-
-    MachineBasicBlock::iterator VPSTInsertPos = MIBuilder.getInstr();
+    LLVM_DEBUG(dbgs() << "VPT block created for: "; MI->dump());
     int VPTInstCnt = 1;
     ARMVCC::VPTCodes NextPred;
 
-    do {
-      ++MBIter;
+    // Look at subsequent instructions, checking if they can be in the same VPT
+    // block.
+    ++MBIter;
+    while (MBIter != EndIter && VPTInstCnt < 4) {
       NextPred = getVPTInstrPredicate(*MBIter, PredReg);
-    } while (NextPred != ARMVCC::None && NextPred == Pred && ++VPTInstCnt < 4);
-
-    switch (VPTInstCnt) {
-    case 1:
-      MIBuilder.addImm(VPTMaskValue::T);
-      break;
-    case 2:
-      MIBuilder.addImm(VPTMaskValue::TT);
-      break;
-    case 3:
-      MIBuilder.addImm(VPTMaskValue::TTT);
-      break;
-    case 4:
-      MIBuilder.addImm(VPTMaskValue::TTTT);
-      break;
-    default:
-      llvm_unreachable("Unexpected number of instruction in a VPT block");
+      assert(NextPred != ARMVCC::Else &&
+             "VPT block pass does not expect Else preds");
+      if (NextPred != Pred)
+        break;
+      LLVM_DEBUG(dbgs() << "  adding : "; MBIter->dump());
+      ++VPTInstCnt;
+      ++MBIter;
     };
 
-    MachineInstr *LastMI = &*MBIter;
-    finalizeBundle(Block, VPSTInsertPos.getInstrIterator(),
-                   ++LastMI->getIterator());
+    unsigned BlockMask = getARMVPTBlockMask(VPTInstCnt);
+
+    // Search back for a VCMP that can be folded to create a VPT, or else create
+    // a VPST directly
+    MachineInstrBuilder MIBuilder;
+    unsigned NewOpcode;
+    MachineInstr *VCMP = findVCMPToFoldIntoVPST(MI, TRI, NewOpcode);
+    if (VCMP) {
+      LLVM_DEBUG(dbgs() << "  folding VCMP into VPST: "; VCMP->dump());
+      MIBuilder = BuildMI(Block, MI, dl, TII->get(NewOpcode));
+      MIBuilder.addImm(BlockMask);
+      MIBuilder.add(VCMP->getOperand(1));
+      MIBuilder.add(VCMP->getOperand(2));
+      MIBuilder.add(VCMP->getOperand(3));
+      VCMP->eraseFromParent();
+    } else {
+      MIBuilder = BuildMI(Block, MI, dl, TII->get(ARM::MVE_VPST));
+      MIBuilder.addImm(BlockMask);
+    }
+
+    finalizeBundle(
+        Block, MachineBasicBlock::instr_iterator(MIBuilder.getInstr()), MBIter);
 
     Modified = true;
-    LLVM_DEBUG(dbgs() << "VPT block created for: "; MI->dump());
-
-    ++MBIter;
   }
   return Modified;
 }

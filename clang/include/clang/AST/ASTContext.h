@@ -22,7 +22,6 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/DeclarationName.h"
-#include "clang/AST/Expr.h"
 #include "clang/AST/ExternalASTSource.h"
 #include "clang/AST/NestedNameSpecifier.h"
 #include "clang/AST/PrettyPrinter.h"
@@ -96,6 +95,7 @@ class CXXRecordDecl;
 class DiagnosticsEngine;
 class Expr;
 class FixedPointSemantics;
+class GlobalDecl;
 class MangleContext;
 class MangleNumberingContext;
 class MaterializeTemporaryExpr;
@@ -113,9 +113,11 @@ class ObjCPropertyDecl;
 class ObjCPropertyImplDecl;
 class ObjCProtocolDecl;
 class ObjCTypeParamDecl;
+struct ParsedTargetAttr;
 class Preprocessor;
 class Stmt;
 class StoredDeclsMap;
+class TargetAttr;
 class TemplateDecl;
 class TemplateParameterList;
 class TemplateTemplateParmDecl;
@@ -124,6 +126,7 @@ class UnresolvedSetIterator;
 class UsingShadowDecl;
 class VarTemplateDecl;
 class VTableContextBase;
+struct BlockVarCopyInit;
 
 namespace Builtin {
 
@@ -139,6 +142,16 @@ class FullComment;
 
 } // namespace comments
 
+namespace interp {
+
+class Context;
+
+} // namespace interp
+
+namespace serialization {
+template <class> class AbstractTypeReader;
+} // namespace serialization
+
 struct TypeInfo {
   uint64_t Width = 0;
   unsigned Align = 0;
@@ -152,22 +165,6 @@ struct TypeInfo {
 /// Holds long-lived AST nodes (such as types and decls) that can be
 /// referred to throughout the semantic analysis of a file.
 class ASTContext : public RefCountedBase<ASTContext> {
-public:
-  /// Copy initialization expr of a __block variable and a boolean flag that
-  /// indicates whether the expression can throw.
-  struct BlockVarCopyInit {
-    BlockVarCopyInit() = default;
-    BlockVarCopyInit(Expr *CopyExpr, bool CanThrow)
-        : ExprAndFlag(CopyExpr, CanThrow) {}
-    void setExprAndFlag(Expr *CopyExpr, bool CanThrow) {
-      ExprAndFlag.setPointerAndInt(CopyExpr, CanThrow);
-    }
-    Expr *getCopyExpr() const { return ExprAndFlag.getPointer(); }
-    bool canThrow() const { return ExprAndFlag.getInt(); }
-    llvm::PointerIntPair<Expr *, 1, bool> ExprAndFlag;
-  };
-
-private:
   friend class NestedNameSpecifier;
 
   mutable SmallVector<Type *, 0> Types;
@@ -179,7 +176,8 @@ private:
   mutable llvm::FoldingSet<LValueReferenceType> LValueReferenceTypes;
   mutable llvm::FoldingSet<RValueReferenceType> RValueReferenceTypes;
   mutable llvm::FoldingSet<MemberPointerType> MemberPointerTypes;
-  mutable llvm::FoldingSet<ConstantArrayType> ConstantArrayTypes;
+  mutable llvm::ContextualFoldingSet<ConstantArrayType, ASTContext &>
+      ConstantArrayTypes;
   mutable llvm::FoldingSet<IncompleteArrayType> IncompleteArrayTypes;
   mutable std::vector<VariableArrayType*> VariableArrayTypes;
   mutable llvm::FoldingSet<DependentSizedArrayType> DependentSizedArrayTypes;
@@ -264,12 +262,6 @@ private:
 
   /// Mapping from __block VarDecls to BlockVarCopyInit.
   llvm::DenseMap<const VarDecl *, BlockVarCopyInit> BlockVarCopyInits;
-
-  /// Mapping from materialized temporaries with static storage duration
-  /// that appear in constant initializers to their evaluated values.  These are
-  /// allocated in a std::map because their address must be stable.
-  llvm::DenseMap<const MaterializeTemporaryExpr *, APValue *>
-    MaterializedTemporaryValues;
 
   /// Used to cleanups APValues stored in the AST.
   mutable llvm::SmallVector<APValue *, 0> APValueCleanups;
@@ -428,6 +420,7 @@ private:
   friend class ASTDeclReader;
   friend class ASTReader;
   friend class ASTWriter;
+  template <class> friend class serialization::AbstractTypeReader;
   friend class CXXRecordDecl;
 
   /// A mapping to contain the template or declaration that
@@ -507,6 +500,8 @@ private:
   /// need to be consistently numbered for the mangler).
   llvm::DenseMap<const DeclContext *, std::unique_ptr<MangleNumberingContext>>
       MangleNumberingContexts;
+  llvm::DenseMap<const Decl *, std::unique_ptr<MangleNumberingContext>>
+      ExtraMangleNumberingContexts;
 
   /// Side-table of mangling numbers for declarations which rarely
   /// need them (like static local vars).
@@ -564,14 +559,28 @@ private:
   const TargetInfo *Target = nullptr;
   const TargetInfo *AuxTarget = nullptr;
   clang::PrintingPolicy PrintingPolicy;
+  std::unique_ptr<interp::Context> InterpContext;
+
+  ast_type_traits::TraversalKind Traversal = ast_type_traits::TK_AsIs;
 
 public:
+  ast_type_traits::TraversalKind getTraversalKind() const { return Traversal; }
+  void setTraversalKind(ast_type_traits::TraversalKind TK) { Traversal = TK; }
+
+  const Expr *traverseIgnored(const Expr *E) const;
+  Expr *traverseIgnored(Expr *E) const;
+  ast_type_traits::DynTypedNode
+  traverseIgnored(const ast_type_traits::DynTypedNode &N) const;
+
   IdentifierTable &Idents;
   SelectorTable &Selectors;
   Builtin::Context &BuiltinInfo;
   mutable DeclarationNameTable DeclarationNames;
   IntrusiveRefCntPtr<ExternalASTSource> ExternalSource;
   ASTMutationListener *Listener = nullptr;
+
+  /// Returns the clang bytecode interpreter context.
+  interp::Context &getInterpContext();
 
   /// Container for either a single DynTypedNode or for an ArrayRef to
   /// DynTypedNode. For use with ParentMap.
@@ -1149,6 +1158,10 @@ public:
   /// attribute.
   QualType getObjCGCQualType(QualType T, Qualifiers::GC gcAttr) const;
 
+  /// Remove the existing address space on the type if it is a pointer size
+  /// address space and return the type with qualifiers intact.
+  QualType removePtrSizeAddrSpace(QualType T) const;
+
   /// Return the uniqued reference to the type for a \c restrict
   /// qualified type.
   ///
@@ -1202,6 +1215,15 @@ public:
   void adjustExceptionSpec(FunctionDecl *FD,
                            const FunctionProtoType::ExceptionSpecInfo &ESI,
                            bool AsWritten = false);
+
+  /// Get a function type and produce the equivalent function type where
+  /// pointer size address spaces in the return type and parameter tyeps are
+  /// replaced with the default address space.
+  QualType getFunctionTypeWithoutPtrSizes(QualType T);
+
+  /// Determine whether two function types are the same, ignoring pointer sizes
+  /// in the return type and parameter types.
+  bool hasSameFunctionTypeIgnoringPtrSizes(QualType T, QualType U);
 
   /// Return the uniqued reference to the type for a complex
   /// number with the specified element type.
@@ -1320,6 +1342,7 @@ public:
   /// Return the unique reference to the type for a constant array of
   /// the specified element type.
   QualType getConstantArrayType(QualType EltTy, const llvm::APInt &ArySize,
+                                const Expr *SizeExpr,
                                 ArrayType::ArraySizeModifier ASM,
                                 unsigned IndexTypeQuals) const;
 
@@ -1489,8 +1512,7 @@ public:
                              bool isKindOf) const;
 
   QualType getObjCTypeParamType(const ObjCTypeParamDecl *Decl,
-                                ArrayRef<ObjCProtocolDecl *> protocols,
-                                QualType Canonical = QualType()) const;
+                                ArrayRef<ObjCProtocolDecl *> protocols) const;
 
   bool ObjCObjectAdoptsQTypeProtocols(QualType QT, ObjCInterfaceDecl *Decl);
 
@@ -2045,6 +2067,11 @@ public:
   /// types.
   bool areCompatibleVectorTypes(QualType FirstVec, QualType SecondVec);
 
+  /// Return true if the type has been explicitly qualified with ObjC ownership.
+  /// A type may be implicitly qualified with ownership under ObjC ARC, and in
+  /// some cases the compiler treats these differently.
+  bool hasDirectOwnershipQualifier(QualType Ty) const;
+
   /// Return true if this is an \c NSObject object with its \c NSObject
   /// attribute set.
   static bool isObjCNSObjectType(QualType Ty) {
@@ -2568,10 +2595,12 @@ public:
     return T == getObjCSelType();
   }
 
-  bool ObjCQualifiedIdTypesAreCompatible(QualType LHS, QualType RHS,
+  bool ObjCQualifiedIdTypesAreCompatible(const ObjCObjectPointerType *LHS,
+                                         const ObjCObjectPointerType *RHS,
                                          bool ForCompare);
 
-  bool ObjCQualifiedClassTypesAreCompatible(QualType LHS, QualType RHS);
+  bool ObjCQualifiedClassTypesAreCompatible(const ObjCObjectPointerType *LHS,
+                                            const ObjCObjectPointerType *RHS);
 
   // Check the safety of assignment from LHS to RHS
   bool canAssignObjCInterfaces(const ObjCObjectPointerType *LHSOPT,
@@ -2793,6 +2822,9 @@ public:
   /// Retrieve the context for computing mangling numbers in the given
   /// DeclContext.
   MangleNumberingContext &getManglingNumberContext(const DeclContext *DC);
+  enum NeedExtraManglingDecl_t { NeedExtraManglingDecl };
+  MangleNumberingContext &getManglingNumberContext(NeedExtraManglingDecl_t,
+                                                   const Decl *D);
 
   std::unique_ptr<MangleNumberingContext> createMangleNumberingContext() const;
 
@@ -2804,15 +2836,19 @@ public:
   /// index of the parameter when it exceeds the size of the normal bitfield.
   unsigned getParameterIndex(const ParmVarDecl *D) const;
 
-  /// Get the storage for the constant value of a materialized temporary
-  /// of static storage duration.
-  APValue *getMaterializedTemporaryValue(const MaterializeTemporaryExpr *E,
-                                         bool MayCreate);
-
   /// Return a string representing the human readable name for the specified
   /// function declaration or file name. Used by SourceLocExpr and
   /// PredefinedExpr to cache evaluated results.
   StringLiteral *getPredefinedStringLiteralFromCache(StringRef Key) const;
+
+  /// Parses the target attributes passed in, and returns only the ones that are
+  /// valid feature names.
+  ParsedTargetAttr filterFunctionTargetAttrs(const TargetAttr *TD) const;
+
+  void getFunctionFeatureMap(llvm::StringMap<bool> &FeatureMap,
+                             const FunctionDecl *) const;
+  void getFunctionFeatureMap(llvm::StringMap<bool> &FeatureMap,
+                             GlobalDecl GD) const;
 
   //===--------------------------------------------------------------------===//
   //                    Statistics
@@ -2984,7 +3020,7 @@ private:
 
   std::vector<Decl *> TraversalScope;
   class ParentMap;
-  std::unique_ptr<ParentMap> Parents;
+  std::map<ast_type_traits::TraversalKind, std::unique_ptr<ParentMap>> Parents;
 
   std::unique_ptr<VTableContextBase> VTContext;
 
@@ -3027,6 +3063,22 @@ inline Selector GetUnarySelector(StringRef name, ASTContext &Ctx) {
   IdentifierInfo* II = &Ctx.Idents.get(name);
   return Ctx.Selectors.getSelector(1, &II);
 }
+
+class TraversalKindScope {
+  ASTContext &Ctx;
+  ast_type_traits::TraversalKind TK = ast_type_traits::TK_AsIs;
+
+public:
+  TraversalKindScope(ASTContext &Ctx,
+                     llvm::Optional<ast_type_traits::TraversalKind> ScopeTK)
+      : Ctx(Ctx) {
+    TK = Ctx.getTraversalKind();
+    if (ScopeTK)
+      Ctx.setTraversalKind(*ScopeTK);
+  }
+
+  ~TraversalKindScope() { Ctx.setTraversalKind(TK); }
+};
 
 } // namespace clang
 

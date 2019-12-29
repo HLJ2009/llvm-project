@@ -515,7 +515,7 @@ class MetadataLoader::MetadataLoaderImpl {
       GV.getMetadata(LLVMContext::MD_dbg, MDs);
       GV.eraseMetadata(LLVMContext::MD_dbg);
       for (auto *MD : MDs)
-        if (auto *DGV = dyn_cast_or_null<DIGlobalVariable>(MD)) {
+        if (auto *DGV = dyn_cast<DIGlobalVariable>(MD)) {
           auto *DGVE = DIGlobalVariableExpression::getDistinct(
               Context, DGV, DIExpression::get(Context, {}));
           GV.addMetadata(LLVMContext::MD_dbg, *DGVE);
@@ -987,7 +987,7 @@ void MetadataLoader::MetadataLoaderImpl::lazyLoadOneMetadata(
   assert(ID >= MDStringRef.size() && "Unexpected lazy-loading of MDString");
   // Lookup first if the metadata hasn't already been loaded.
   if (auto *MD = MetadataList.lookup(ID)) {
-    auto *N = dyn_cast_or_null<MDNode>(MD);
+    auto *N = cast<MDNode>(MD);
     if (!N->isTemporary())
       return;
   }
@@ -1457,7 +1457,7 @@ Error MetadataLoader::MetadataLoaderImpl::parseOneMetadata(
     break;
   }
   case bitc::METADATA_COMPILE_UNIT: {
-    if (Record.size() < 14 || Record.size() > 19)
+    if (Record.size() < 14 || Record.size() > 20)
       return error("Invalid record");
 
     // Ignore Record[0], which indicates whether this compile unit is

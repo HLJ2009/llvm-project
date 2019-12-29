@@ -154,8 +154,8 @@ template <> struct CustomMappingTraits<std::set<IFSSymbol>> {
       IO.mapRequired(Sym.Name.c_str(), const_cast<IFSSymbol &>(Sym));
   }
 };
-} // End yaml namespace
-} // End llvm namespace
+} // namespace yaml
+} // namespace llvm
 
 // A cumulative representation of ELF stubs.
 // Both textual and binary stubs will read into and write from this object.
@@ -196,8 +196,8 @@ template <> struct MappingTraits<IFSStub> {
     IO.mapRequired("Symbols", Stub.Symbols);
   }
 };
-} // End yaml namespace
-} // End llvm namespace
+} // namespace yaml
+} // namespace llvm
 
 static Expected<std::unique_ptr<IFSStub>> readInputFile(StringRef FilePath) {
   // Read in file.
@@ -220,31 +220,36 @@ static Expected<std::unique_ptr<IFSStub>> readInputFile(StringRef FilePath) {
 
 int writeTbdStub(const llvm::Triple &T, const std::set<IFSSymbol> &Symbols,
                  const StringRef Format, raw_ostream &Out) {
-  auto ArchOrError =
-      [](const llvm::Triple &T) -> llvm::Expected<llvm::MachO::Architecture> {
-    switch (T.getArch()) {
-    default:
-      return createStringError(errc::not_supported, "Invalid Architecture.");
-    case llvm::Triple::ArchType::x86:
-      return AK_i386;
-    case llvm::Triple::ArchType::x86_64:
-      return AK_x86_64;
-    case llvm::Triple::ArchType::arm:
-      return AK_armv7;
-    case llvm::Triple::ArchType::aarch64:
-      return AK_arm64;
-    }
+
+  auto PlatformKindOrError =
+      [](const llvm::Triple &T) -> llvm::Expected<llvm::MachO::PlatformKind> {
+    if (T.isMacOSX())
+      return llvm::MachO::PlatformKind::macOS;
+    if (T.isTvOS())
+      return llvm::MachO::PlatformKind::tvOS;
+    if (T.isWatchOS())
+      return llvm::MachO::PlatformKind::watchOS;
+    // Note: put isiOS last because tvOS and watchOS are also iOS according
+    // to the Triple.
+    if (T.isiOS())
+      return llvm::MachO::PlatformKind::iOS;
+
+    // TODO: Add an option for ForceTriple, but keep ForceFormat for now.
+    if (ForceFormat == "TBD")
+      return llvm::MachO::PlatformKind::macOS;
+
+    return createStringError(errc::not_supported, "Invalid Platform.\n");
   }(T);
 
-  if (!ArchOrError)
+  if (!PlatformKindOrError)
     return -1;
 
-  Architecture Arch = ArchOrError.get();
+  PlatformKind Plat = PlatformKindOrError.get();
+  TargetList Targets({Target(llvm::MachO::mapToArchitecture(T), Plat)});
 
   InterfaceFile File;
-  File.setFileType(FileType::TBD_V3);
-  File.setArchitectures(Arch);
-  File.setPlatform(PlatformKind::macOS);
+  File.setFileType(FileType::TBD_V3); // Only supporting v3 for now.
+  File.addTargets(Targets);
 
   for (const auto &Symbol : Symbols) {
     auto Name = Symbol.Name;
@@ -262,9 +267,9 @@ int writeTbdStub(const llvm::Triple &T, const std::set<IFSSymbol> &Symbols,
       break;
     }
     if (Symbol.Weak)
-      File.addSymbol(Kind, Name, Arch, SymbolFlags::WeakDefined);
+      File.addSymbol(Kind, Name, Targets, SymbolFlags::WeakDefined);
     else
-      File.addSymbol(Kind, Name, Arch);
+      File.addSymbol(Kind, Name, Targets);
   }
 
   SmallString<4096> Buffer;
@@ -352,12 +357,10 @@ int writeElfStub(const llvm::Triple &T, const std::set<IFSSymbol> &Symbols,
   });
 
   yaml::Input YIn(YamlStr);
-  if (Error E = convertYAML(YIn, Out)) {
-    logAllUnhandledErrors(std::move(E), WithColor::error(errs(), "llvm-ifs"));
-    return 1;
-  }
-
-  return 0;
+  auto ErrHandler = [](const Twine &Msg) {
+    WithColor::error(errs(), "llvm-ifs") << Msg << "\n";
+  };
+  return convertYAML(YIn, Out, ErrHandler) ? 0 : 1;
 }
 
 int writeIfso(const IFSStub &Stub, bool IsWriteIfs, raw_ostream &Out) {
@@ -382,6 +385,7 @@ int writeIfso(const IFSStub &Stub, bool IsWriteIfs, raw_ostream &Out) {
   return -1;
 }
 
+// TODO: Drop ObjectFileFormat, it can be subsumed from the triple.
 // New Interface Stubs Yaml Format:
 // --- !experimental-ifs-v1
 // IfsVersion:      1.0
@@ -418,6 +422,10 @@ int main(int argc, char *argv[]) {
       Stub.SOName = TargetStub->SOName;
       Stub.NeededLibs = TargetStub->NeededLibs;
     } else {
+      Stub.ObjectFileFormat = !Stub.ObjectFileFormat.empty()
+                                  ? Stub.ObjectFileFormat
+                                  : TargetStub->ObjectFileFormat;
+
       if (Stub.IfsVersion != TargetStub->IfsVersion) {
         if (Stub.IfsVersion.getMajor() != IFSVersionCurrent.getMajor()) {
           WithColor::error()
@@ -430,7 +438,8 @@ int main(int argc, char *argv[]) {
         if (TargetStub->IfsVersion > Stub.IfsVersion)
           Stub.IfsVersion = TargetStub->IfsVersion;
       }
-      if (Stub.ObjectFileFormat != TargetStub->ObjectFileFormat) {
+      if (Stub.ObjectFileFormat != TargetStub->ObjectFileFormat &&
+          !TargetStub->ObjectFileFormat.empty()) {
         WithColor::error() << "Interface Stub: ObjectFileFormat Mismatch."
                            << "\nFilenames: " << PreviousInputFilePath << " "
                            << InputFilePath << "\nObjectFileFormat Values: "
@@ -438,7 +447,7 @@ int main(int argc, char *argv[]) {
                            << TargetStub->ObjectFileFormat << "\n";
         return -1;
       }
-      if (Stub.Triple != TargetStub->Triple) {
+      if (Stub.Triple != TargetStub->Triple && !TargetStub->Triple.empty()) {
         WithColor::error() << "Interface Stub: Triple Mismatch."
                            << "\nFilenames: " << PreviousInputFilePath << " "
                            << InputFilePath
@@ -490,13 +499,8 @@ int main(int argc, char *argv[]) {
         return -1;
       }
       if (Symbol.Weak != SI->second.Weak) {
-        // TODO: Add conflict resolution for Weak vs non-Weak.
-        WithColor::error() << "Interface Stub: Weak Mismatch for "
-                           << Symbol.Name << ".\nFilename: " << InputFilePath
-                           << "\nWeak Values: " << SI->second.Weak << " "
-                           << Symbol.Weak << "\n";
-
-        return -1;
+        Symbol.Weak = false;
+        continue;
       }
       // TODO: Not checking Warning. Will be dropped.
     }

@@ -9,8 +9,8 @@ add_lldb_library(lldbSymbol
   Block.cpp
   ClangASTContext.cpp
   ClangASTImporter.cpp
+  ClangASTMetadata.cpp
   ClangExternalASTSourceCallbacks.cpp
-  ClangExternalASTSourceCommon.cpp
   ClangUtil.cpp
   CompactUnwindInfo.cpp
   CompileUnit.cpp
@@ -46,9 +46,6 @@ add_lldb_library(lldbSymbol
   ${PLATFORM_SOURCES}
 
   LINK_LIBS
-    clangAST
-    clangBasic
-    clangFrontend
     lldbCore
     lldbExpression
     lldbHost
@@ -59,6 +56,11 @@ add_lldb_library(lldbSymbol
     lldbPluginSymbolFilePDB
     lldbPluginObjCLanguage
     lldbPluginObjCRuntime
+
+  CLANG_LIBS
+    clangAST
+    clangBasic
+    clangFrontend
 
   LINK_COMPONENTS
     Support

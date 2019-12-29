@@ -2,7 +2,6 @@
 Test lldb watchpoint that uses 'watchpoint set -w write -s size' to watch a pointed location with size.
 """
 
-from __future__ import print_function
 
 
 import lldb
@@ -28,16 +27,12 @@ class WatchLocationUsingWatchpointSetTestCase(TestBase):
         # Build dictionary to have unique executable names for each test
         # method.
 
-    @expectedFailureAll(
+    @skipIf(
         oslist=["linux"],
         archs=[
             'aarch64',
             'arm'],
         bugnumber="llvm.org/pr26031")
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
-    @expectedFailureNetBSD
     def test_watchlocation_using_watchpoint_set(self):
         """Test watching a location with 'watchpoint set expression -w write -s size' option."""
         self.build()

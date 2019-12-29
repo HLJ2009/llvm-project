@@ -236,7 +236,7 @@ AVRTargetLowering::AVRTargetLowering(const AVRTargetMachine &TM,
   setLibcallName(RTLIB::SIN_F32, "sin");
   setLibcallName(RTLIB::COS_F32, "cos");
 
-  setMinFunctionAlignment(1);
+  setMinFunctionAlignment(Align(2));
   setMinimumJumpTableEntries(UINT_MAX);
 }
 
@@ -1472,16 +1472,15 @@ MachineBasicBlock *AVRTargetLowering::insertShift(MachineInstr &MI,
     RC = &AVR::DREGSRegClass;
     break;
   case AVR::Rol8:
-    Opc = AVR::ADCRdRr; // ROL is an alias of ADC Rd, Rd
+    Opc = AVR::ROLBRd;
     RC = &AVR::GPR8RegClass;
-    HasRepeatedOperand = true;
     break;
   case AVR::Rol16:
     Opc = AVR::ROLWRd;
     RC = &AVR::DREGSRegClass;
     break;
   case AVR::Ror8:
-    Opc = AVR::RORRd;
+    Opc = AVR::RORBRd;
     RC = &AVR::GPR8RegClass;
     break;
   case AVR::Ror16:
@@ -2006,10 +2005,9 @@ void AVRTargetLowering::LowerAsmOperandForConstraint(SDValue Op,
   return TargetLowering::LowerAsmOperandForConstraint(Op, Constraint, Ops, DAG);
 }
 
-unsigned AVRTargetLowering::getRegisterByName(const char *RegName,
-                                              EVT VT,
-                                              SelectionDAG &DAG) const {
-  unsigned Reg;
+Register AVRTargetLowering::getRegisterByName(const char *RegName, EVT VT,
+                                              const MachineFunction &MF) const {
+  Register Reg;
 
   if (VT == MVT::i8) {
     Reg = StringSwitch<unsigned>(RegName)

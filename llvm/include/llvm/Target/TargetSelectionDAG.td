@@ -137,8 +137,11 @@ def SDTFPSignOp : SDTypeProfile<1, 2, [     // fcopysign.
 def SDTFPTernaryOp : SDTypeProfile<1, 3, [  // fmadd, fnmsub, etc.
   SDTCisSameAs<0, 1>, SDTCisSameAs<0, 2>, SDTCisSameAs<0, 3>, SDTCisFP<0>
 ]>;
-def SDTIntUnaryOp : SDTypeProfile<1, 1, [   // ctlz, cttz
+def SDTIntUnaryOp : SDTypeProfile<1, 1, [ // bitreverse
   SDTCisSameAs<0, 1>, SDTCisInt<0>
+]>;
+def SDTIntBitCountUnaryOp : SDTypeProfile<1, 1, [   // ctlz, cttz
+  SDTCisInt<0>, SDTCisInt<1>
 ]>;
 def SDTIntExtendOp : SDTypeProfile<1, 1, [  // sext, zext, anyext
   SDTCisInt<0>, SDTCisInt<1>, SDTCisOpSmallerThanOp<1, 0>, SDTCisSameNumEltsAs<0, 1>
@@ -221,13 +224,13 @@ def SDTIStore : SDTypeProfile<1, 3, [       // indexed store
   SDTCisSameAs<0, 2>, SDTCisPtrTy<0>, SDTCisPtrTy<3>
 ]>;
 
-def SDTMaskedStore: SDTypeProfile<0, 3, [       // masked store
-  SDTCisVec<0>, SDTCisPtrTy<1>, SDTCisVec<2>, SDTCisSameNumEltsAs<0, 2>
+def SDTMaskedStore: SDTypeProfile<0, 4, [       // masked store
+  SDTCisVec<0>, SDTCisPtrTy<1>, SDTCisPtrTy<2>, SDTCisVec<3>, SDTCisSameNumEltsAs<0, 3>
 ]>;
 
-def SDTMaskedLoad: SDTypeProfile<1, 3, [       // masked load
-  SDTCisVec<0>, SDTCisPtrTy<1>, SDTCisVec<2>, SDTCisSameAs<0, 3>,
-  SDTCisSameNumEltsAs<0, 2>
+def SDTMaskedLoad: SDTypeProfile<1, 4, [       // masked load
+  SDTCisVec<0>, SDTCisPtrTy<1>, SDTCisPtrTy<2>, SDTCisVec<3>, SDTCisSameAs<0, 4>,
+  SDTCisSameNumEltsAs<0, 3>
 ]>;
 
 def SDTVecShuffle : SDTypeProfile<1, 2, [
@@ -396,6 +399,7 @@ def usubsat    : SDNode<"ISD::USUBSAT"   , SDTIntBinOp>;
 def smulfix    : SDNode<"ISD::SMULFIX"   , SDTIntScaledBinOp, [SDNPCommutative]>;
 def smulfixsat : SDNode<"ISD::SMULFIXSAT", SDTIntScaledBinOp, [SDNPCommutative]>;
 def umulfix    : SDNode<"ISD::UMULFIX"   , SDTIntScaledBinOp, [SDNPCommutative]>;
+def umulfixsat : SDNode<"ISD::UMULFIXSAT", SDTIntScaledBinOp, [SDNPCommutative]>;
 
 def sext_inreg : SDNode<"ISD::SIGN_EXTEND_INREG", SDTExtInreg>;
 def sext_invec : SDNode<"ISD::SIGN_EXTEND_VECTOR_INREG", SDTExtInvec>;
@@ -404,11 +408,11 @@ def zext_invec : SDNode<"ISD::ZERO_EXTEND_VECTOR_INREG", SDTExtInvec>;
 def abs        : SDNode<"ISD::ABS"        , SDTIntUnaryOp>;
 def bitreverse : SDNode<"ISD::BITREVERSE" , SDTIntUnaryOp>;
 def bswap      : SDNode<"ISD::BSWAP"      , SDTIntUnaryOp>;
-def ctlz       : SDNode<"ISD::CTLZ"       , SDTIntUnaryOp>;
-def cttz       : SDNode<"ISD::CTTZ"       , SDTIntUnaryOp>;
-def ctpop      : SDNode<"ISD::CTPOP"      , SDTIntUnaryOp>;
-def ctlz_zero_undef : SDNode<"ISD::CTLZ_ZERO_UNDEF", SDTIntUnaryOp>;
-def cttz_zero_undef : SDNode<"ISD::CTTZ_ZERO_UNDEF", SDTIntUnaryOp>;
+def ctlz       : SDNode<"ISD::CTLZ"       , SDTIntBitCountUnaryOp>;
+def cttz       : SDNode<"ISD::CTTZ"       , SDTIntBitCountUnaryOp>;
+def ctpop      : SDNode<"ISD::CTPOP"      , SDTIntBitCountUnaryOp>;
+def ctlz_zero_undef : SDNode<"ISD::CTLZ_ZERO_UNDEF", SDTIntBitCountUnaryOp>;
+def cttz_zero_undef : SDNode<"ISD::CTTZ_ZERO_UNDEF", SDTIntBitCountUnaryOp>;
 def sext       : SDNode<"ISD::SIGN_EXTEND", SDTIntExtendOp>;
 def zext       : SDNode<"ISD::ZERO_EXTEND", SDTIntExtendOp>;
 def anyext     : SDNode<"ISD::ANY_EXTEND" , SDTIntExtendOp>;
@@ -419,6 +423,10 @@ def extractelt : SDNode<"ISD::EXTRACT_VECTOR_ELT", SDTVecExtract>;
 def insertelt  : SDNode<"ISD::INSERT_VECTOR_ELT", SDTVecInsert>;
 
 def vecreduce_add  : SDNode<"ISD::VECREDUCE_ADD", SDTVecReduce>;
+def vecreduce_smax  : SDNode<"ISD::VECREDUCE_SMAX", SDTVecReduce>;
+def vecreduce_umax  : SDNode<"ISD::VECREDUCE_UMAX", SDTVecReduce>;
+def vecreduce_smin  : SDNode<"ISD::VECREDUCE_SMIN", SDTVecReduce>;
+def vecreduce_umin  : SDNode<"ISD::VECREDUCE_UMIN", SDTVecReduce>;
 
 def fadd       : SDNode<"ISD::FADD"       , SDTFPBinOp, [SDNPCommutative]>;
 def fsub       : SDNode<"ISD::FSUB"       , SDTFPBinOp>;
@@ -498,12 +506,20 @@ def strict_flog2      : SDNode<"ISD::STRICT_FLOG2",
                                SDTFPUnaryOp, [SDNPHasChain]>;
 def strict_frint      : SDNode<"ISD::STRICT_FRINT",
                                SDTFPUnaryOp, [SDNPHasChain]>;
+def strict_lrint      : SDNode<"ISD::STRICT_LRINT",
+                               SDTFPToIntOp, [SDNPHasChain]>;
+def strict_llrint     : SDNode<"ISD::STRICT_LLRINT",
+                               SDTFPToIntOp, [SDNPHasChain]>;
 def strict_fnearbyint : SDNode<"ISD::STRICT_FNEARBYINT",
                                SDTFPUnaryOp, [SDNPHasChain]>;
 def strict_fceil      : SDNode<"ISD::STRICT_FCEIL",
                                SDTFPUnaryOp, [SDNPHasChain]>;
 def strict_ffloor     : SDNode<"ISD::STRICT_FFLOOR",
                                SDTFPUnaryOp, [SDNPHasChain]>;
+def strict_lround     : SDNode<"ISD::STRICT_LROUND",
+                               SDTFPToIntOp, [SDNPHasChain]>;
+def strict_llround    : SDNode<"ISD::STRICT_LLROUND",
+                               SDTFPToIntOp, [SDNPHasChain]>;
 def strict_fround     : SDNode<"ISD::STRICT_FROUND",
                                SDTFPUnaryOp, [SDNPHasChain]>;
 def strict_ftrunc     : SDNode<"ISD::STRICT_FTRUNC",
@@ -514,6 +530,12 @@ def strict_fminnum    : SDNode<"ISD::STRICT_FMINNUM",
 def strict_fmaxnum    : SDNode<"ISD::STRICT_FMAXNUM",
                                SDTFPBinOp, [SDNPHasChain,
                                             SDNPCommutative, SDNPAssociative]>;
+def strict_fminimum   : SDNode<"ISD::STRICT_FMINIMUM",
+                               SDTFPBinOp, [SDNPHasChain,
+                                            SDNPCommutative, SDNPAssociative]>;
+def strict_fmaximum   : SDNode<"ISD::STRICT_FMAXIMUM",
+                               SDTFPBinOp, [SDNPHasChain,
+                                            SDNPCommutative, SDNPAssociative]>;
 def strict_fpround    : SDNode<"ISD::STRICT_FP_ROUND",
                                SDTFPRoundOp, [SDNPHasChain]>;
 def strict_fpextend   : SDNode<"ISD::STRICT_FP_EXTEND",
@@ -522,6 +544,10 @@ def strict_fp_to_sint : SDNode<"ISD::STRICT_FP_TO_SINT",
                                SDTFPToIntOp, [SDNPHasChain]>;
 def strict_fp_to_uint : SDNode<"ISD::STRICT_FP_TO_UINT",
                                SDTFPToIntOp, [SDNPHasChain]>;
+def strict_sint_to_fp : SDNode<"ISD::STRICT_SINT_TO_FP",
+                               SDTIntToFPOp, [SDNPHasChain]>;
+def strict_uint_to_fp : SDNode<"ISD::STRICT_UINT_TO_FP",
+                               SDTIntToFPOp, [SDNPHasChain]>;
 
 def setcc      : SDNode<"ISD::SETCC"      , SDTSetCC>;
 def select     : SDNode<"ISD::SELECT"     , SDTSelect>;
@@ -839,6 +865,11 @@ class ImmLeaf<ValueType vt, code pred, SDNodeXForm xform = NOOP_SDNodeXForm,
   // Is the data type of the immediate an APFloat?
   bit IsAPFloat = 0;
 }
+
+// Convenience wrapper for ImmLeaf to use timm/TargetConstant instead
+// of imm/Constant.
+class TImmLeaf<ValueType vt, code pred, SDNodeXForm xform = NOOP_SDNodeXForm,
+  SDNode ImmNode = timm> : ImmLeaf<vt, pred, xform, ImmNode>;
 
 // An ImmLeaf except that Imm is an APInt. This is useful when you need to
 // zero-extend the immediate instead of sign-extend it.
@@ -1196,13 +1227,15 @@ def post_truncstvi16 : PatFrag<(ops node:$val, node:$base, node:$offset),
   let ScalarMemoryVT = i16;
 }
 
-def nonvolatile_load : PatFrag<(ops node:$ptr),
-                               (load node:$ptr), [{
-  return !cast<LoadSDNode>(N)->isVolatile();
+// TODO: Split these into volatile and unordered flavors to enable
+// selectively legal optimizations for each.  (See D66309)
+def simple_load : PatFrag<(ops node:$ptr),
+                          (load node:$ptr), [{
+  return cast<LoadSDNode>(N)->isSimple();
 }]>;
-def nonvolatile_store : PatFrag<(ops node:$val, node:$ptr),
-                                (store node:$val, node:$ptr), [{
-  return !cast<StoreSDNode>(N)->isVolatile();
+def simple_store : PatFrag<(ops node:$val, node:$ptr),
+                           (store node:$val, node:$ptr), [{
+  return cast<StoreSDNode>(N)->isSimple();
 }]>;
 
 // nontemporal store fragments.
@@ -1324,6 +1357,12 @@ def any_flog2      : PatFrags<(ops node:$src),
 def any_frint      : PatFrags<(ops node:$src),
                               [(strict_frint node:$src),
                                (frint node:$src)]>;
+def any_lrint      : PatFrags<(ops node:$src),
+                              [(strict_lrint node:$src),
+                               (lrint node:$src)]>;
+def any_llrint     : PatFrags<(ops node:$src),
+                              [(strict_llrint node:$src),
+                               (llrint node:$src)]>;
 def any_fnearbyint : PatFrags<(ops node:$src),
                               [(strict_fnearbyint node:$src),
                                (fnearbyint node:$src)]>;
@@ -1333,6 +1372,12 @@ def any_fceil      : PatFrags<(ops node:$src),
 def any_ffloor     : PatFrags<(ops node:$src),
                               [(strict_ffloor node:$src),
                                (ffloor node:$src)]>;
+def any_lround     : PatFrags<(ops node:$src),
+                              [(strict_lround node:$src),
+                               (lround node:$src)]>;
+def any_llround    : PatFrags<(ops node:$src),
+                              [(strict_llround node:$src),
+                               (llround node:$src)]>;
 def any_fround     : PatFrags<(ops node:$src),
                               [(strict_fround node:$src),
                                (fround node:$src)]>;
@@ -1345,6 +1390,12 @@ def any_fmaxnum    : PatFrags<(ops node:$lhs, node:$rhs),
 def any_fminnum    : PatFrags<(ops node:$lhs, node:$rhs),
                               [(strict_fminnum node:$lhs, node:$rhs),
                                (fminnum node:$lhs, node:$rhs)]>;
+def any_fmaximum   : PatFrags<(ops node:$lhs, node:$rhs),
+                              [(strict_fmaximum node:$lhs, node:$rhs),
+                               (fmaximum node:$lhs, node:$rhs)]>;
+def any_fminimum   : PatFrags<(ops node:$lhs, node:$rhs),
+                              [(strict_fminimum node:$lhs, node:$rhs),
+                               (fminimum node:$lhs, node:$rhs)]>;
 def any_fpround    : PatFrags<(ops node:$src),
                               [(strict_fpround node:$src),
                                (fpround node:$src)]>;
@@ -1363,6 +1414,12 @@ def any_fp_to_sint : PatFrags<(ops node:$src),
 def any_fp_to_uint : PatFrags<(ops node:$src),
                               [(strict_fp_to_uint node:$src),
                                (fp_to_uint node:$src)]>;
+def any_sint_to_fp : PatFrags<(ops node:$src),
+                              [(strict_sint_to_fp node:$src),
+                               (sint_to_fp node:$src)]>;
+def any_uint_to_fp : PatFrags<(ops node:$src),
+                              [(strict_uint_to_fp node:$src),
+                               (uint_to_fp node:$src)]>;
 
 multiclass binary_atomic_op_ord<SDNode atomic_op> {
   def #NAME#_monotonic : PatFrag<(ops node:$ptr, node:$val),

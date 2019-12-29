@@ -11,8 +11,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
@@ -43,6 +44,7 @@ class VirtualCallChecker
 public:
   // These are going to be null if the respective check is disabled.
   mutable std::unique_ptr<BugType> BT_Pure, BT_Impure;
+  bool ShowFixIts = false;
 
   void checkBeginFunction(CheckerContext &C) const;
   void checkEndFunction(const ReturnStmt *RS, CheckerContext &C) const;
@@ -145,7 +147,18 @@ void VirtualCallChecker::checkPreCall(const CallEvent &Call,
     return;
   }
 
-  auto Report = std::make_unique<BugReport>(*BT, OS.str(), N);
+  auto Report = std::make_unique<PathSensitiveBugReport>(*BT, OS.str(), N);
+
+  if (ShowFixIts && !IsPure) {
+    // FIXME: These hints are valid only when the virtual call is made
+    // directly from the constructor/destructor. Otherwise the dispatch
+    // will work just fine from other callees, and the fix may break
+    // the otherwise correct program.
+    FixItHint Fixit = FixItHint::CreateInsertion(
+        CE->getBeginLoc(), MD->getParent()->getNameAsString() + "::");
+    Report->addFixItHint(Fixit);
+  }
+
   C.emitReport(std::move(Report));
 }
 
@@ -194,18 +207,20 @@ void ento::registerVirtualCallModeling(CheckerManager &Mgr) {
 
 void ento::registerPureVirtualCallChecker(CheckerManager &Mgr) {
   auto *Chk = Mgr.getChecker<VirtualCallChecker>();
-  Chk->BT_Pure = std::make_unique<BugType>(
-      Mgr.getCurrentCheckName(), "Pure virtual method call",
-      categories::CXXObjectLifecycle);
+  Chk->BT_Pure = std::make_unique<BugType>(Mgr.getCurrentCheckerName(),
+                                           "Pure virtual method call",
+                                           categories::CXXObjectLifecycle);
 }
 
 void ento::registerVirtualCallChecker(CheckerManager &Mgr) {
   auto *Chk = Mgr.getChecker<VirtualCallChecker>();
   if (!Mgr.getAnalyzerOptions().getCheckerBooleanOption(
-          Mgr.getCurrentCheckName(), "PureOnly")) {
+          Mgr.getCurrentCheckerName(), "PureOnly")) {
     Chk->BT_Impure = std::make_unique<BugType>(
-        Mgr.getCurrentCheckName(), "Unexpected loss of virtual dispatch",
+        Mgr.getCurrentCheckerName(), "Unexpected loss of virtual dispatch",
         categories::CXXObjectLifecycle);
+    Chk->ShowFixIts = Mgr.getAnalyzerOptions().getCheckerBooleanOption(
+        Mgr.getCurrentCheckerName(), "ShowFixIts");
   }
 }
 

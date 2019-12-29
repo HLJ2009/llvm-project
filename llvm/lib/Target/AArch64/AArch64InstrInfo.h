@@ -56,8 +56,7 @@ public:
 
   bool
   areMemAccessesTriviallyDisjoint(const MachineInstr &MIa,
-                                  const MachineInstr &MIb,
-                                  AliasAnalysis *AA = nullptr) const override;
+                                  const MachineInstr &MIb) const override;
 
   unsigned isLoadFromStackSlot(const MachineInstr &MI,
                                int &FrameIndex) const override;
@@ -89,6 +88,12 @@ public:
   /// Returns the unscaled load/store for the scaled load/store opcode,
   /// if there is a corresponding unscaled variant available.
   static Optional<unsigned> getUnscaledLdSt(unsigned Opc);
+
+  /// Scaling factor for (scaled or unscaled) load or store.
+  static int getMemScale(unsigned Opc);
+  static int getMemScale(const MachineInstr &MI) {
+    return getMemScale(MI.getOpcode());
+  }
 
 
   /// Returns the index for the immediate for a given instruction.
@@ -132,15 +137,15 @@ public:
                            unsigned NumLoads) const override;
 
   void copyPhysRegTuple(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
-                        const DebugLoc &DL, unsigned DestReg, unsigned SrcReg,
-                        bool KillSrc, unsigned Opcode,
+                        const DebugLoc &DL, MCRegister DestReg,
+                        MCRegister SrcReg, bool KillSrc, unsigned Opcode,
                         llvm::ArrayRef<unsigned> Indices) const;
   void copyGPRRegTuple(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
                        DebugLoc DL, unsigned DestReg, unsigned SrcReg,
                        bool KillSrc, unsigned Opcode, unsigned ZeroReg,
                        llvm::ArrayRef<unsigned> Indices) const;
   void copyPhysReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
-                   const DebugLoc &DL, unsigned DestReg, unsigned SrcReg,
+                   const DebugLoc &DL, MCRegister DestReg, MCRegister SrcReg,
                    bool KillSrc) const override;
 
   void storeRegToStackSlot(MachineBasicBlock &MBB,
@@ -266,15 +271,21 @@ public:
   /// on Windows.
   static bool isSEHInstruction(const MachineInstr &MI);
 
+  Optional<RegImmPair> isAddImmediate(const MachineInstr &MI,
+                                      Register Reg) const override;
+
+  Optional<ParamLoadedValue> describeLoadedValue(const MachineInstr &MI,
+                                                 Register Reg) const override;
+
 #define GET_INSTRINFO_HELPER_DECLS
 #include "AArch64GenInstrInfo.inc"
 
 protected:
-  /// If the specific machine instruction is a instruction that moves/copies
-  /// value from one register to another register return true along with
-  /// @Source machine operand and @Destination machine operand.
-  bool isCopyInstrImpl(const MachineInstr &MI, const MachineOperand *&Source,
-                       const MachineOperand *&Destination) const override;
+  /// If the specific machine instruction is an instruction that moves/copies
+  /// value from one register to another register return destination and source
+  /// registers as machine operands.
+  Optional<DestSourcePair>
+  isCopyInstrImpl(const MachineInstr &MI) const override;
 
 private:
   /// Sets the offsets on outlined instructions in \p MBB which use SP
@@ -336,7 +347,7 @@ enum AArch64FrameOffsetStatus {
 int isAArch64FrameOffsetLegal(const MachineInstr &MI, StackOffset &Offset,
                               bool *OutUseUnscaledOp = nullptr,
                               unsigned *OutUnscaledOp = nullptr,
-                              int *EmittableOffset = nullptr);
+                              int64_t *EmittableOffset = nullptr);
 
 static inline bool isUncondBranchOpcode(int Opc) { return Opc == AArch64::B; }
 

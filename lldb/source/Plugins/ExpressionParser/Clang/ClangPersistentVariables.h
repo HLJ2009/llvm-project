@@ -50,10 +50,20 @@ public:
     return "$";
   }
 
+  /// Returns the next file name that should be used for user expressions.
+  std::string GetNextExprFileName() {
+    std::string name;
+    name.append("<user expression ");
+    name.append(std::to_string(m_next_user_file_id++));
+    name.append(">");
+    return name;
+  }
+
   llvm::Optional<CompilerType>
   GetCompilerTypeFromPersistentDecl(ConstString type_name) override;
 
-  void RegisterPersistentDecl(ConstString name, clang::NamedDecl *decl);
+  void RegisterPersistentDecl(ConstString name, clang::NamedDecl *decl,
+                              ClangASTContext *ctx);
 
   clang::NamedDecl *GetPersistentDecl(ConstString name);
 
@@ -66,10 +76,19 @@ public:
   }
 
 private:
+  /// The counter used by GetNextExprFileName.
+  uint32_t m_next_user_file_id = 0;
   // The counter used by GetNextPersistentVariableName
   uint32_t m_next_persistent_variable_id = 0;
 
-  typedef llvm::DenseMap<const char *, clang::NamedDecl *> PersistentDeclMap;
+  struct PersistentDecl {
+    /// The persistent decl.
+    clang::NamedDecl *m_decl = nullptr;
+    /// The ClangASTContext for the ASTContext of m_decl.
+    ClangASTContext *m_context = nullptr;
+  };
+
+  typedef llvm::DenseMap<const char *, PersistentDecl> PersistentDeclMap;
   PersistentDeclMap
       m_persistent_decls; ///< Persistent entities declared by the user.
 

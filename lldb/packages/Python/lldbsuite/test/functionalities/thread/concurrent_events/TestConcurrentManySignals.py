@@ -1,4 +1,3 @@
-from __future__ import print_function
 
 import unittest2
 
@@ -17,6 +16,7 @@ class ConcurrentManySignals(ConcurrentEventsBase):
     # This test is flaky on Darwin.
     @skipIfDarwin
     @expectedFailureNetBSD
+    @skipIfOutOfTreeDebugserver
     def test(self):
         """Test 100 signals from 100 threads."""
         self.build(dictionary=self.getBuildFlags())

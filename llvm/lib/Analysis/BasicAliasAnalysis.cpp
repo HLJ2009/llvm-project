@@ -25,9 +25,9 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/MemoryBuiltins.h"
 #include "llvm/Analysis/MemoryLocation.h"
+#include "llvm/Analysis/PhiValues.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
-#include "llvm/Analysis/PhiValues.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Constant.h"
@@ -49,6 +49,7 @@
 #include "llvm/IR/Type.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
@@ -1481,7 +1482,8 @@ AliasResult BasicAAResult::aliasGEP(
         // give up if we can't determine conditions that hold for every cycle:
         const Value *V = DecompGEP1.VarIndices[i].V;
 
-        KnownBits Known = computeKnownBits(V, DL, 0, &AC, nullptr, DT);
+        KnownBits Known =
+            computeKnownBits(V, DL, 0, &AC, dyn_cast<Instruction>(GEP1), DT);
         bool SignKnownZero = Known.isNonNegative();
         bool SignKnownOne = Known.isNegative();
 
@@ -2049,7 +2051,7 @@ BasicAAResult BasicAA::run(Function &F, FunctionAnalysisManager &AM) {
 }
 
 BasicAAWrapperPass::BasicAAWrapperPass() : FunctionPass(ID) {
-    initializeBasicAAWrapperPassPass(*PassRegistry::getPassRegistry());
+  initializeBasicAAWrapperPassPass(*PassRegistry::getPassRegistry());
 }
 
 char BasicAAWrapperPass::ID = 0;
@@ -2075,8 +2077,9 @@ bool BasicAAWrapperPass::runOnFunction(Function &F) {
   auto *LIWP = getAnalysisIfAvailable<LoopInfoWrapperPass>();
   auto *PVWP = getAnalysisIfAvailable<PhiValuesWrapperPass>();
 
-  Result.reset(new BasicAAResult(F.getParent()->getDataLayout(), F, TLIWP.getTLI(),
-                                 ACT.getAssumptionCache(F), &DTWP.getDomTree(),
+  Result.reset(new BasicAAResult(F.getParent()->getDataLayout(), F,
+                                 TLIWP.getTLI(F), ACT.getAssumptionCache(F),
+                                 &DTWP.getDomTree(),
                                  LIWP ? &LIWP->getLoopInfo() : nullptr,
                                  PVWP ? &PVWP->getResult() : nullptr));
 
@@ -2093,8 +2096,7 @@ void BasicAAWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
 
 BasicAAResult llvm::createLegacyPMBasicAAResult(Pass &P, Function &F) {
   return BasicAAResult(
-      F.getParent()->getDataLayout(),
-      F,
-      P.getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(),
+      F.getParent()->getDataLayout(), F,
+      P.getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F),
       P.getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F));
 }

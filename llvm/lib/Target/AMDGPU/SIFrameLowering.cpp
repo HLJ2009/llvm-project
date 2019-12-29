@@ -112,6 +112,7 @@ static void buildPrologSpill(LivePhysRegs &LiveRegs, MachineBasicBlock &MBB,
       .addImm(0) // slc
       .addImm(0) // tfe
       .addImm(0) // dlc
+      .addImm(0) // swz
       .addMemOperand(MMO);
     return;
   }
@@ -132,6 +133,7 @@ static void buildPrologSpill(LivePhysRegs &LiveRegs, MachineBasicBlock &MBB,
     .addImm(0) // slc
     .addImm(0) // tfe
     .addImm(0) // dlc
+    .addImm(0) // swz
     .addMemOperand(MMO);
 }
 
@@ -157,6 +159,7 @@ static void buildEpilogReload(LivePhysRegs &LiveRegs, MachineBasicBlock &MBB,
       .addImm(0) // slc
       .addImm(0) // tfe
       .addImm(0) // dlc
+      .addImm(0) // swz
       .addMemOperand(MMO);
     return;
   }
@@ -177,6 +180,7 @@ static void buildEpilogReload(LivePhysRegs &LiveRegs, MachineBasicBlock &MBB,
     .addImm(0) // slc
     .addImm(0) // tfe
     .addImm(0) // dlc
+    .addImm(0) // swz
     .addMemOperand(MMO);
 }
 
@@ -574,10 +578,7 @@ void SIFrameLowering::emitEntryFunctionScratchSetup(const GCNSubtarget &ST,
 
     // We now have the GIT ptr - now get the scratch descriptor from the entry
     // at offset 0 (or offset 16 for a compute shader).
-    PointerType *PtrTy =
-      PointerType::get(Type::getInt64Ty(MF.getFunction().getContext()),
-                       AMDGPUAS::CONSTANT_ADDRESS);
-    MachinePointerInfo PtrInfo(UndefValue::get(PtrTy));
+    MachinePointerInfo PtrInfo(AMDGPUAS::CONSTANT_ADDRESS);
     const MCInstrDesc &LoadDwordX4 = TII->get(AMDGPU::S_LOAD_DWORDX4_IMM);
     auto MMO = MF.getMachineMemOperand(PtrInfo,
                                        MachineMemOperand::MOLoad |
@@ -619,10 +620,7 @@ void SIFrameLowering::emitEntryFunctionScratchSetup(const GCNSubtarget &ST,
       } else {
         const MCInstrDesc &LoadDwordX2 = TII->get(AMDGPU::S_LOAD_DWORDX2_IMM);
 
-        PointerType *PtrTy =
-          PointerType::get(Type::getInt64Ty(MF.getFunction().getContext()),
-                           AMDGPUAS::CONSTANT_ADDRESS);
-        MachinePointerInfo PtrInfo(UndefValue::get(PtrTy));
+        MachinePointerInfo PtrInfo(AMDGPUAS::CONSTANT_ADDRESS);
         auto MMO = MF.getMachineMemOperand(PtrInfo,
                                            MachineMemOperand::MOLoad |
                                            MachineMemOperand::MOInvariant |
@@ -669,6 +667,8 @@ bool SIFrameLowering::isSupportedStackID(TargetStackID::Value ID) const {
   case TargetStackID::NoAlloc:
   case TargetStackID::SGPRSpill:
     return true;
+  case TargetStackID::SVEVector:
+    return false;
   }
   llvm_unreachable("Invalid TargetStackID::Value");
 }

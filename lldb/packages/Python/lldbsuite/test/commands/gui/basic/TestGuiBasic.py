@@ -11,11 +11,15 @@ class BasicGuiCommandTest(PExpectTest):
 
     mydir = TestBase.compute_mydir(__file__)
 
+    # PExpect uses many timeouts internally and doesn't play well
+    # under ASAN on a loaded machine..
+    @skipIfAsan
     @skipIfCursesSupportMissing
+    @skipIfRemote # "run" command will not work correctly for remote debug
     def test_gui(self):
         self.build()
 
-        self.launch(executable=self.getBuildArtifact("a.out"))
+        self.launch(executable=self.getBuildArtifact("a.out"), dimensions=(100,500))
         self.expect('br set -f main.c -p "// Break here"', substrs=["Breakpoint 1", "address ="])
         self.expect("run", substrs=["stop reason ="])
 

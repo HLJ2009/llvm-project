@@ -613,10 +613,16 @@ protected:
                 const ProgramPoint *PP = nullptr);
 
   /// Call PointerEscape callback when a value escapes as a result of bind.
-  ProgramStateRef processPointerEscapedOnBind(ProgramStateRef State,
-                                              SVal Loc,
-                                              SVal Val,
-                                              const LocationContext *LCtx) override;
+  ProgramStateRef processPointerEscapedOnBind(
+      ProgramStateRef State, ArrayRef<std::pair<SVal, SVal>> LocAndVals,
+      const LocationContext *LCtx, PointerEscapeKind Kind,
+      const CallEvent *Call) override;
+
+  ProgramStateRef
+  processPointerEscapedOnBind(ProgramStateRef State,
+                              SVal Loc, SVal Val,
+                              const LocationContext *LCtx);
+
   /// Call PointerEscape callback when a value escapes as a result of
   /// region invalidation.
   /// \param[in] ITraits Specifies invalidation traits for regions/symbols.
@@ -628,9 +634,10 @@ protected:
                            RegionAndSymbolInvalidationTraits &ITraits) override;
 
   /// A simple wrapper when you only need to notify checkers of pointer-escape
-  /// of a single value.
-  ProgramStateRef escapeValue(ProgramStateRef State, SVal V,
-                              PointerEscapeKind K) const;
+  /// of some values.
+  ProgramStateRef escapeValues(ProgramStateRef State, ArrayRef<SVal> Vs,
+                               PointerEscapeKind K,
+                               const CallEvent *Call = nullptr) const;
 
 public:
   // FIXME: 'tag' should be removed, and a LocationContext should be used
@@ -666,7 +673,7 @@ public:
                                   const LocationContext *LCtx,
                                   ProgramStateRef State);
 
-  /// Evaluate a call, running pre- and post-call checks and allowing checkers
+  /// Evaluate a call, running pre- and post-call checkers and allowing checkers
   /// to be responsible for handling the evaluation of the call itself.
   void evalCall(ExplodedNodeSet &Dst, ExplodedNode *Pred,
                 const CallEvent &Call);
