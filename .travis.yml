@@ -1,6 +1,5 @@
 language: cpp
 sudo: required
-#dist: bionic
 arch: arm64
 compiler:
 - gcc
