@@ -1,8 +1,9 @@
 language: cpp
 sudo: required
+dist: bionic
 arch: arm64
 compiler:
-- gcc
+- clang
 os:
 - linux
 ruby: 2.2.0
