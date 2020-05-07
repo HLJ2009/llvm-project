@@ -8,7 +8,7 @@ os:
 - linux
 ruby: 2.2.0
 script:
- mkdir llvm-build && cd llvm-build && cmake -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS=clang -DLLVM_TARGETS_TO_BUILD="AArch64" -G "Unix Makefiles" ../llvm && make -j16 && make check-all -j32
+ mkdir llvm-build && cd llvm-build && cmake -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS=clang -DLLVM_TARGETS_TO_BUILD="AArch64" -G "Unix Makefiles" ../llvm && make -j20 && make check-all -j32
 branches:
   only:
   - master
