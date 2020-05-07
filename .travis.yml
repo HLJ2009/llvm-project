@@ -7,7 +7,7 @@ os:
 - linux
 ruby: 2.2.0
 script:
- mkdir llvm-build && cd llvm-build && cmake -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS=clang -G "Unix Makefiles" ../llvm && make -j && make check-all -j
+ mkdir llvm-build && cd llvm-build && cmake -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS=clang -G "Unix Makefiles" ../llvm && make && make check-all
 branches:
   only:
   - master
