@@ -1,7 +1,6 @@
 language: cpp
 sudo: required
-dist: xenial 
-arch: ppc64le
+arch: arm64
 compiler:
 - gcc 
 os:
